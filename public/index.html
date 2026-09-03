@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Local Pi Control Center overview">
+    <title>Pi Control Center</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">π</span>
+          <div>
+            <strong>Pi Control Center</strong>
+            <span class="eyebrow">local / read-mostly</span>
+          </div>
+        </div>
+        <nav aria-label="Primary navigation">
+          <a class="nav-item active" href="/#overview" data-page="overview">Overview</a>
+          <a class="nav-item" href="/#agents" data-page="agents">Agents</a>
+          <a class="nav-item" href="/#skills" data-page="skills">Skills</a>
+          <a class="nav-item" href="/#mcp" data-page="mcp">MCP</a>
+          <a class="nav-item" href="/#projects" data-page="projects">Projects</a>
+          <a class="nav-item" href="/#settings" data-page="settings">Settings</a>
+          <a class="nav-item" href="/#worktrees" data-page="worktrees">Worktrees</a>
+          <a class="nav-item" href="/#usage" data-page="usage">Usage</a>
+          <a class="nav-item" href="/#diagnostics" data-page="diagnostics">Diagnostics</a>
+        </nav>
+        <p class="sidebar-note">This first version observes local evidence only. Existing Pi and project state is not changed.</p>
+      </aside>
+
+      <main class="content" id="overview">
+        <div id="overview-page" class="page">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Workspace overview</p>
+            <h1>Overview</h1>
+            <p class="muted">A small, honest view of the Pi workstation.</p>
+          </div>
+          <div class="header-actions"><div id="refresh-status" class="refresh-status">Loading local evidence…</div><button class="refresh-button" id="refresh-overview" type="button">Refresh</button></div>
+        </header>
+
+        <section class="status-grid" aria-label="Runtime status">
+          <article class="card status-card accent">
+            <div class="card-label">Control Center</div>
+            <div class="status-line"><span class="status-dot"></span><strong id="runtime-status">—</strong></div>
+            <p id="runtime-detail" class="muted">—</p>
+          </article>
+          <article class="card status-card">
+            <div class="card-label">Pi</div>
+            <strong id="pi-version" class="metric">—</strong>
+            <p class="muted">CLI version</p>
+          </article>
+          <article class="card status-card">
+            <div class="card-label">pi-subagents</div>
+            <strong id="subagents-version" class="metric">—</strong>
+            <p id="subagents-detail" class="muted">Installed package</p>
+          </article>
+          <article class="card status-card">
+            <div class="card-label">Dashboard</div>
+            <strong id="dashboard-address" class="metric compact">—</strong>
+            <p class="muted">localhost only · dynamic port</p>
+          </article>
+        </section>
+
+        <section class="section-block">
+          <div class="section-heading">
+            <div><p class="eyebrow">Local inventory</p><h2>Known projects</h2></div>
+            <span id="project-count" class="count-badge">—</span>
+          </div>
+          <div class="card table-card">
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Project</th><th>Branch</th><th>HEAD</th><th>State</th><th>Governance</th></tr></thead>
+                <tbody id="projects-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <div class="two-column">
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Configuration metadata</p><h2>Pi configuration</h2></div></div>
+            <div class="card info-card" id="pi-config"></div>
+          </section>
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Installed definitions</p><h2>Runtime roles</h2></div><span id="role-count" class="count-badge">—</span></div>
+            <div class="card role-card" id="roles-list"></div>
+          </section>
+        </div>
+
+        <section class="section-block">
+          <div class="section-heading"><div><p class="eyebrow">Evidence boundary</p><h2>What this view knows</h2></div></div>
+          <div class="three-column">
+            <article class="card evidence-card"><h3>Supported now</h3><ul id="supported-list"></ul></article>
+            <article class="card evidence-card"><h3>Stable local evidence</h3><ul id="stable-list"></ul></article>
+            <article class="card evidence-card"><h3>Not attached</h3><ul id="unsupported-list"></ul></article>
+          </div>
+        </section>
+        <footer class="footer">Read at <span id="generated-at">—</span> · no secrets, writes, database, or remote network access</footer>
+        </div>
+
+        <div id="agents-page" class="page hidden">
+          <header class="page-header">
+            <div><p class="eyebrow">Project-grouped read-only observability</p><h1>Agents</h1><p class="muted">Pi Sessions and historical pi-subagents lifecycle evidence, organized by known Project.</p></div>
+            <div class="header-actions"><div id="observability-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-observability" type="button">Refresh</button></div>
+          </header>
+
+          <section class="section-block first-section">
+            <div id="live-observability-notice" class="notice-card"><strong>Live Pi runtime</strong><span>Waiting for Bridge telemetry. Historical evidence below remains separate.</span></div>
+            <div class="status-grid observability-summary">
+              <article class="card status-card accent"><div class="card-label">Projects with evidence</div><strong id="agent-projects-with-evidence" class="metric">—</strong><p class="muted">known Projects with sessions or lifecycle evidence</p></article>
+              <article class="card status-card"><div class="card-label">Pi Sessions</div><strong id="agent-session-total" class="metric">—</strong><p class="muted">separate session entities</p></article>
+              <article class="card status-card"><div class="card-label">Recent evidence</div><strong id="agent-recent-total" class="metric">—</strong><p id="agent-recent-window" class="muted">last 24 hours</p></article>
+              <article class="card status-card"><div class="card-label">Lifecycle evidence</div><strong id="agent-lifecycle-total" class="metric">—</strong><p id="agent-lifecycle-results" class="muted">historical results only</p></article>
+            </div>
+          </section>
+
+          <section class="section-block live-runtime-section">
+            <div class="section-heading"><div><p class="eyebrow">Live runtime · Bridge snapshots</p><h2>Live Pi Presence</h2></div><span id="live-runtime-status" class="count-badge">UNSUPPORTED</span></div>
+            <div class="status-grid live-summary">
+              <article class="card status-card accent"><div class="card-label">LIVE PI</div><strong id="live-pi-count" class="metric">—</strong><p class="muted">fresh process identity</p></article>
+              <article class="card status-card"><div class="card-label">BUSY</div><strong id="live-busy-count" class="metric">—</strong><p class="muted">agent loop active</p></article>
+              <article class="card status-card"><div class="card-label">IDLE</div><strong id="live-idle-count" class="metric">—</strong><p class="muted">agent loop settled</p></article>
+              <article class="card status-card"><div class="card-label">STALE / EXITED</div><strong id="live-stale-exited-count" class="metric">—</strong><p class="muted">not current runtime</p></article>
+            </div>
+            <div class="card table-card live-project-table-card"><div class="table-scroll"><table><thead><tr><th>Project</th><th>LIVE PI</th><th>BUSY</th><th>IDLE</th><th>Last heartbeat</th></tr></thead><tbody id="live-projects-body"><tr><td colspan="5" class="empty">Waiting for live telemetry…</td></tr></tbody></table></div></div>
+            <div class="section-heading live-instance-heading"><div><p class="eyebrow">Current process instances</p><h3>Live Pi Sessions</h3></div><span id="live-instance-count" class="count-badge">—</span></div>
+            <div class="card table-card live-instance-table-card"><div class="table-scroll"><table><thead><tr><th>Project</th><th>Workspace</th><th>Presence</th><th>Agent loop</th><th>Session</th><th>Started</th><th>Last heartbeat</th></tr></thead><tbody id="live-instances-body"><tr><td colspan="7" class="empty">Waiting for live telemetry…</td></tr></tbody></table></div></div>
+            <p id="live-runtime-source" class="source-note">Private snapshots are read-only telemetry. PIDs, process-start identities, CWDs, and raw snapshot fields remain internal.</p>
+          </section>
+
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Primary view</p><h2>Project Activity</h2></div><div class="filter-control"><label for="agent-project-filter">Project</label><select id="agent-project-filter"><option value="all">All Projects</option></select></div></div>
+            <div class="card table-card"><div class="table-scroll"><table class="agent-project-table">
+              <thead><tr><th>Project</th><th>Sessions</th><th>Recent evidence</th><th>Completed</th><th>Failed</th><th>Last evidence</th><th>Live state</th><th></th></tr></thead>
+              <tbody id="agent-projects-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+            </table></div></div>
+            <p id="agent-project-source" class="source-note">Project identity comes from the bounded Project inventory; linked worktrees use Git identity where available.</p>
+          </section>
+
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Persisted evidence</p><h2>Recent Evidence</h2></div><span id="agent-recent-count" class="count-badge">—</span></div>
+            <div class="card table-card"><div class="table-scroll"><table>
+              <thead><tr><th>Project</th><th>Type</th><th>Identifier</th><th>Role</th><th>Workspace</th><th>Updated</th><th>Historical result</th></tr></thead>
+              <tbody id="agent-recent-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+            </table></div></div>
+            <p id="agent-recent-source" class="source-note">Recent evidence is bounded to persisted updates from the last 24 hours.</p>
+          </section>
+
+          <section id="agent-detail-section" class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Project drill-down</p><h2 id="agent-detail-title">All Projects</h2></div><span id="agent-detail-count" class="count-badge">—</span></div>
+            <div class="status-grid agent-detail-summary">
+              <article class="card status-card"><div class="card-label">Pi Sessions</div><strong id="agent-detail-sessions" class="metric">—</strong><p class="muted">historical session inventory</p></article>
+              <article class="card status-card"><div class="card-label">Lifecycle evidence</div><strong id="agent-detail-lifecycle" class="metric">—</strong><p class="muted">unique status.json run IDs</p></article>
+              <article class="card status-card"><div class="card-label">Completed / failed</div><strong id="agent-detail-results" class="metric compact">—</strong><p class="muted">explicit terminal evidence only</p></article>
+              <article class="card status-card"><div class="card-label">Unknown</div><strong id="agent-detail-unknown" class="metric">—</strong><p class="muted">unresolved or non-terminal history</p></article>
+            </div>
+            <div class="two-column agent-detail-tables">
+              <section><div class="section-heading"><div><p class="eyebrow">Historical subagent lifecycle</p><h3>Lifecycle Evidence</h3></div></div><div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Run</th><th>Project</th><th>Result</th><th>Role</th><th>Updated</th></tr></thead><tbody id="agent-detail-lifecycle-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table></div></div></section>
+              <section><div class="section-heading"><div><p class="eyebrow">Historical session inventory</p><h3>Project Sessions</h3></div></div><div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Session</th><th>Workspace</th><th>Updated</th><th>Provider / model</th><th>Size</th></tr></thead><tbody id="agent-detail-sessions-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table></div></div></section>
+            </div>
+          </section>
+
+          <section class="section-block">
+            <details class="card all-sessions-details"><summary>All Sessions <span id="session-count" class="count-badge">—</span></summary><div class="table-card"><div class="table-scroll"><table>
+              <thead><tr><th>Session</th><th>Project</th><th>Workspace</th><th>Created</th><th>Updated</th><th>Provider / model</th><th>Thinking</th><th>Size</th></tr></thead>
+              <tbody id="sessions-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+            </table></div></div><p id="session-source" class="source-note">Source: —</p></details>
+          </section>
+          <footer class="footer">Read-only metadata only · Pi Sessions remain distinct from lifecycle evidence · no transcripts, prompts, tool payloads, or control operations</footer>
+        </div>
+
+        <div id="skills-page" class="page hidden">
+          <header class="page-header">
+            <div><p class="eyebrow">Read-only capability inventory</p><h1>Skills</h1><p class="muted">Pi Skill metadata from documented ResourceLoader discovery surfaces.</p></div>
+            <div class="header-actions"><div id="skills-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-skills" type="button">Refresh</button></div>
+          </header>
+          <section class="status-grid skills-summary" aria-label="Skills inventory summary">
+            <article class="card status-card accent"><div class="card-label">Discovered Skills</div><strong id="skills-discovered" class="metric">—</strong><p class="muted">metadata only</p></article>
+            <article class="card status-card"><div class="card-label">Invalid metadata</div><strong id="skills-invalid" class="metric">—</strong><p class="muted">not loadable</p></article>
+            <article class="card status-card"><div class="card-label">Shadowed names</div><strong id="skills-shadowed" class="metric">—</strong><p class="muted">Pi first-wins selection</p></article>
+            <article class="card status-card"><div class="card-label">Runtime usage</div><strong id="skills-runtime" class="metric compact">—</strong><p class="muted">not attached</p></article>
+          </section>
+          <section class="section-block first-section">
+            <div class="notice-card"><strong>Content boundary</strong><span id="skills-policy">Skill bodies, scripts, references, and linked files are never returned.</span></div>
+            <div class="section-heading"><div><p class="eyebrow">Available sources</p><h2>Discovery surfaces</h2></div></div>
+            <div class="card table-card skills-table-card"><div class="table-scroll"><table>
+              <thead><tr><th>Source</th><th>Scope</th><th>Provider</th><th>Path category</th><th>State</th><th>Skills</th><th>Notes</th></tr></thead>
+              <tbody id="skills-sources-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+            </table></div></div>
+          </section>
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Safe frontmatter metadata</p><h2>Skill inventory</h2></div></div>
+            <div class="card table-card skills-table-card"><div class="table-scroll"><table>
+              <thead><tr><th>Skill</th><th>Description</th><th>Scope</th><th>Source</th><th>Provider</th><th>State</th><th>Notes</th></tr></thead>
+              <tbody id="skills-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+            </table></div></div>
+          </section>
+          <footer class="footer">Read-only Skill metadata · no body viewer, editing, installation, enable/disable, or execution</footer>
+        </div>
+
+        <div id="settings-page" class="page hidden">
+          <header class="page-header">
+            <div><p class="eyebrow">Read-only Pi configuration</p><h1>Settings</h1><p class="muted">Curated configuration metadata from documented Pi sources.</p></div>
+            <div class="header-actions"><div id="settings-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-settings" type="button">Refresh</button></div>
+          </header>
+          <section class="status-grid settings-summary" aria-label="Settings summary">
+            <article class="card status-card accent"><div class="card-label">Sources</div><strong id="settings-sources-count" class="metric">—</strong><p class="muted">global · project · defaults</p></article>
+            <article class="card status-card"><div class="card-label">Configured</div><strong id="settings-configured-count" class="metric">—</strong><p class="muted">safe settings with values</p></article>
+            <article class="card status-card"><div class="card-label">Static resolution</div><strong id="settings-effective-count" class="metric">—</strong><p class="muted">documented file merge</p></article>
+            <article class="card status-card"><div class="card-label">Runtime effective</div><strong id="settings-runtime-state" class="metric compact unsupported">Unsupported</strong><p class="muted">separate Pi process</p></article>
+          </section>
+          <section class="section-block first-section">
+            <div class="notice-card"><strong>Safe inventory only</strong><span id="settings-policy">Raw settings, paths, commands, credentials, environment values, and runtime objects are omitted.</span></div>
+            <div class="section-heading"><div><p class="eyebrow">Configuration sources</p><h2>Sources and scope</h2></div></div>
+            <div class="card table-card settings-table-card"><div class="table-scroll"><table><thead><tr><th>Source</th><th>Scope</th><th>State</th><th>Configured keys</th><th>Safe fields</th><th>Omitted fields</th><th>Notes</th></tr></thead><tbody id="settings-sources-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody></table></div></div>
+          </section>
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Curated values</p><h2>Configured, default, and static effective</h2></div></div>
+            <div class="card table-card settings-table-card"><div class="table-scroll"><table><thead><tr><th>Setting</th><th>Configured values</th><th>Default</th><th>Static effective</th><th>Scope</th><th>State</th><th>Notes</th></tr></thead><tbody id="settings-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody></table></div></div>
+          </section>
+          <section class="two-column settings-secondary">
+            <section class="section-block"><div class="section-heading"><div><p class="eyebrow">Configured resources</p><h2>Packages</h2></div></div><div class="card table-card settings-table-card"><div class="table-scroll"><table><thead><tr><th>Package</th><th>Scope</th><th>State</th><th>Notes</th></tr></thead><tbody id="settings-packages-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div></div></section>
+            <section class="section-block"><div class="section-heading"><div><p class="eyebrow">Installed definitions</p><h2>Roles</h2></div></div><div class="card table-card settings-table-card"><div class="table-scroll"><table><thead><tr><th>Role</th><th>Model</th><th>Thinking</th><th>Runner</th><th>Tools</th><th>State</th></tr></thead><tbody id="settings-roles-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div></div></section>
+          </section>
+          <section class="section-block"><div class="section-heading"><div><p class="eyebrow">Resolution boundary</p><h2>Static versus runtime</h2></div></div><div class="card evidence-card" id="settings-resolution"></div></section>
+          <section class="section-block"><div class="section-heading"><div><p class="eyebrow">Evidence limits</p><h2>Read-only boundary</h2></div></div><div class="card evidence-card"><ul id="settings-limitations"><li>Loading…</li></ul></div></section>
+          <footer class="footer">Read-only settings metadata · no save, apply, reset, import, export, credential, or configuration control</footer>
+        </div>
+
+        <div id="worktrees-page" class="page hidden">
+          <header class="page-header">
+            <div><p class="eyebrow">Read-only Git inventory</p><h1>Worktrees</h1><p class="muted">Repository worktree topology and bounded state from Git CLI evidence.</p></div>
+            <div class="header-actions"><div id="worktrees-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-worktrees" type="button">Refresh</button></div>
+          </header>
+          <section class="status-grid worktrees-summary" aria-label="Worktree summary">
+            <article class="card status-card accent"><div class="card-label">Repositories</div><strong id="worktrees-repositories" class="metric">—</strong><p class="muted">Git identity groups</p></article>
+            <article class="card status-card"><div class="card-label">Worktrees</div><strong id="worktrees-total" class="metric">—</strong><p class="muted">Git-reported records</p></article>
+            <article class="card status-card"><div class="card-label">Linked</div><strong id="worktrees-linked" class="metric">—</strong><p class="muted">additional worktrees</p></article>
+            <article class="card status-card"><div class="card-label">Special states</div><strong id="worktrees-special" class="metric">—</strong><p class="muted">detached · locked · prunable</p></article>
+          </section>
+          <section class="section-block first-section">
+            <div class="notice-card"><strong>Git evidence only</strong><span id="worktrees-source">Git worktree metadata is read-only; no worktree or repository operation is available.</span></div>
+            <div class="card table-card worktrees-table-card"><div class="table-scroll"><table><thead><tr><th>Repository</th><th>Main / Linked</th><th>Path</th><th>Branch</th><th>HEAD</th><th>State</th><th>Dirty status</th><th>Locked</th><th>Prunable</th><th>Notes</th></tr></thead><tbody id="worktrees-body"><tr><td colspan="10" class="empty">Loading…</td></tr></tbody></table></div></div>
+          </section>
+          <section class="section-block"><div class="section-heading"><div><p class="eyebrow">Evidence limits</p><h2>Read-only boundary</h2></div></div><div class="card evidence-card"><ul><li>Repository groups use Git common-directory identity, not names, remotes, or directory proximity.</li><li>Git porcelain order identifies the main record; later records are linked worktrees.</li><li>Prunable is descriptive Git administrative metadata and does not imply safe deletion.</li><li>Dirty status exposes bounded counts only; file names, ignored files, and diffs are omitted.</li></ul></div></section>
+          <footer class="footer">Read-only Git metadata · no create, remove, prune, move, lock, unlock, checkout, branch, commit, or cleanup operations</footer>
+        </div>
+
+        <div id="usage-page" class="page hidden">
+          <header class="page-header">
+            <div><p class="eyebrow">Read-only usage inspection</p><h1>Usage</h1><p class="muted">Token and scoped cost analytics represented by local Pi session evidence.</p></div>
+            <div class="header-actions"><label class="window-control">Window <select id="usage-window"><option value="all">All available evidence</option><option value="today">Today</option><option value="last7">Last 7 days</option><option value="last30">Last 30 days</option></select></label><div id="usage-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-usage" type="button">Refresh</button></div>
+          </header>
+          <section class="section-block first-section">
+            <div class="notice-card"><strong>Local evidence only</strong><span id="usage-scope">Usage represented by discovered Pi session artifacts; this is not account-wide billing usage.</span></div>
+            <div class="status-grid usage-summary" aria-label="Usage summary">
+              <article class="card status-card accent"><div class="card-label">Total tokens</div><strong id="usage-total" class="metric">—</strong><p id="usage-window-label" class="muted">—</p></article>
+              <article class="card status-card"><div class="card-label">Input tokens</div><strong id="usage-input" class="metric">—</strong><p class="muted">stored Pi Usage.input</p></article>
+              <article class="card status-card"><div class="card-label">Output tokens</div><strong id="usage-output" class="metric">—</strong><p class="muted">includes reported reasoning</p></article>
+              <article class="card status-card"><div class="card-label">Cache tokens</div><strong id="usage-cache" class="metric">—</strong><p class="muted">read + write</p></article>
+              <article class="card status-card"><div class="card-label">Pi-computed cost</div><strong id="usage-cost" class="metric compact">—</strong><p id="usage-cost-detail" class="muted">—</p></article>
+            </div>
+            <div class="two-column usage-details">
+              <div class="card info-card"><div class="info-row"><span class="info-key">Records / sessions</span><span id="usage-records" class="info-value">—</span></div><div class="info-row"><span class="info-key">Event period</span><span id="usage-date-range" class="info-value">—</span></div><div class="info-row"><span class="info-key">Completeness</span><span id="usage-completeness-value" class="info-value">—</span></div><div class="info-row"><span class="info-key">Source scan</span><span id="usage-source-detail" class="info-value">—</span></div></div>
+              <div class="card info-card"><div class="info-row"><span class="info-key">Model attribution</span><span id="usage-model-detail" class="info-value">—</span></div><div class="info-row"><span class="info-key">Project attribution</span><span id="usage-project-detail" class="info-value">—</span></div><div class="info-row"><span class="info-key">Role attribution</span><span class="info-value">Unsupported</span></div><div class="info-row"><span class="info-key">Persistence</span><span class="info-value">None · on-demand scan</span></div></div>
+            </div>
+          </section>
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Exact source categories</p><h2>Token categories</h2></div></div>
+            <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Category</th><th>Status</th><th>Semantics</th></tr></thead><tbody id="usage-token-categories"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody></table></div></div>
+          </section>
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Stored provider metadata</p><h2>By model</h2></div></div>
+            <p class="source-note">Model names come from each stored assistant record. Missing attribution remains UNATTRIBUTED.</p>
+            <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Records</th><th>Total tokens</th><th>Cost (USD)</th></tr></thead><tbody id="usage-models-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table></div></div>
+          </section>
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Deterministic cwd mapping</p><h2>By project</h2></div></div>
+            <p class="source-note">Only stored working directories under <code>~/code/&lt;project&gt;</code> are attributed. Other records remain UNATTRIBUTED.</p>
+            <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Project</th><th>Records</th><th>Total tokens</th><th>Cost (USD)</th></tr></thead><tbody id="usage-projects-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div></div>
+          </section>
+          <section class="section-block"><div class="section-heading"><div><p class="eyebrow">Evidence limits</p><h2>Completeness and limitations</h2></div></div><div class="notice-card"><strong id="usage-completeness">Local evidence only</strong><span>Account-complete usage, live process usage, and role-level usage are unsupported.</span></div><div class="card evidence-card"><ul id="usage-limitations"><li>Loading…</li></ul></div></section>
+          <footer class="footer">Read-only usage metadata · no billing API, pricing lookup, persistence, transcript viewer, or background collector</footer>
+        </div>
+
+        <div id="projects-page" class="page hidden">
+          <header class="page-header">
+            <div><p class="eyebrow">Local repository inventory</p><h1>Projects</h1><p class="muted">A bounded view of Git projects and marker-backed candidates under <code>~/code</code>.</p></div>
+            <div class="header-actions"><div id="projects-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-projects" type="button">Refresh</button></div>
+          </header>
+          <section class="status-grid project-summary" aria-label="Project inventory summary">
+            <article class="card status-card accent"><div class="card-label">Discovered entries</div><strong id="projects-total" class="metric">—</strong><p class="muted">explicit local evidence</p></article>
+            <article class="card status-card"><div class="card-label">Git projects</div><strong id="projects-git" class="metric">—</strong><p class="muted">non-mutating Git inspection</p></article>
+            <article class="card status-card"><div class="card-label">Non-Git candidates</div><strong id="projects-candidates" class="metric">—</strong><p class="muted">marker-backed only</p></article>
+          </section>
+          <section class="section-block first-section">
+            <div class="notice-card"><strong>Scope</strong><span id="projects-source">Direct child directories under ~/code; unrelated directories are omitted.</span></div>
+            <div class="card table-card projects-table-card"><div class="table-scroll"><table>
+              <thead><tr><th>Project</th><th>Classification</th><th>Git</th><th>Branch</th><th>HEAD</th><th>State</th><th>Governance</th><th>Pi config</th></tr></thead>
+              <tbody id="projects-page-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+            </table></div></div>
+          </section>
+          <footer class="footer">Read-only project and filesystem metadata · no repository actions or settings edits</footer>
+        </div>
+
+        <div id="diagnostics-page" class="page hidden">
+          <header class="page-header">
+            <div><p class="eyebrow">Evidence source health</p><h1>Diagnostics</h1><p class="muted">Can this dashboard obtain the local evidence it depends on?</p></div>
+            <div class="header-actions"><div id="diagnostics-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-diagnostics" type="button">Refresh</button></div>
+          </header>
+          <section class="status-grid diagnostic-summary" aria-label="Overall evidence health">
+            <article class="card status-card accent"><div class="card-label">Overall evidence health</div><div class="status-line"><span id="diagnostics-dot" class="status-dot"></span><strong id="diagnostics-overall-status">—</strong></div><p id="diagnostics-overall-detail" class="muted">—</p></article>
+            <article class="card status-card"><div class="card-label">Supported checks</div><strong id="diagnostics-supported" class="metric">—</strong><p class="muted">source availability</p></article>
+            <article class="card status-card"><div class="card-label">Intentional limits</div><strong id="diagnostics-unsupported" class="metric">—</strong><p class="muted">not treated as failures</p></article>
+          </section>
+          <section class="section-block first-section">
+            <div class="section-heading"><div><p class="eyebrow">Read-only checks</p><h2>Evidence sources</h2></div></div>
+            <div class="card table-card diagnostics-table-card"><div class="table-scroll"><table>
+              <thead><tr><th>Check</th><th>Status</th><th>Explanation</th><th>Source</th></tr></thead>
+              <tbody id="diagnostics-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+            </table></div></div>
+          </section>
+          <footer class="footer">Diagnostics are point-in-time read-only checks · no background monitoring or control operations</footer>
+        </div>
+
+        <div id="mcp-page" class="page hidden">
+          <header class="page-header">
+            <div><p class="eyebrow">Read-only integration inventory</p><h1>MCP</h1><p class="muted">Configured MCP metadata from documented Pi surfaces only.</p></div>
+            <div class="header-actions"><div id="mcp-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-mcp" type="button">Refresh</button></div>
+          </header>
+          <section class="status-grid mcp-summary" aria-label="MCP inventory summary">
+            <article class="card status-card accent"><div class="card-label">Configured entries</div><strong id="mcp-entry-count" class="metric">—</strong><p class="muted">safe metadata only</p></article>
+            <article class="card status-card"><div class="card-label">Inspected scopes</div><strong id="mcp-source-count" class="metric">—</strong><p class="muted">Pi configuration surfaces</p></article>
+            <article class="card status-card"><div class="card-label">Live connectivity</div><strong id="mcp-connectivity" class="metric compact">—</strong><p class="muted">not inferred from config</p></article>
+          </section>
+          <section class="section-block first-section">
+            <div class="notice-card"><strong>Evidence boundary</strong><span id="mcp-policy">Only documented Pi settings and configured package metadata are inspected. Configuration presence does not mean connected, running, or healthy.</span></div>
+            <div class="section-heading"><div><p class="eyebrow">Configured entries</p><h2>MCP inventory</h2></div></div>
+            <div class="card table-card mcp-table-card"><div class="table-scroll"><table>
+              <thead><tr><th>Name</th><th>Scope</th><th>Source</th><th>Transport</th><th>State</th><th>Notes</th></tr></thead>
+              <tbody id="mcp-entries-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+            </table></div></div>
+          </section>
+          <section class="section-block">
+            <div class="section-heading"><div><p class="eyebrow">Available configuration surfaces</p><h2>Sources inspected</h2></div></div>
+            <div class="card table-card mcp-table-card"><div class="table-scroll"><table>
+              <thead><tr><th>Surface</th><th>Scope</th><th>Source</th><th>State</th><th>Configured</th><th>Notes</th></tr></thead>
+              <tbody id="mcp-sources-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+            </table></div></div>
+          </section>
+          <footer class="footer">Read-only MCP metadata · no config editing, credentials, transport inspection, or tool execution</footer>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

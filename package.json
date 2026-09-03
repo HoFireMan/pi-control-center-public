@@ -1,0 +1,13 @@
+{
+  "name": "pi-control-center",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local, read-mostly browser dashboard for Pi evidence.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  }
+}
