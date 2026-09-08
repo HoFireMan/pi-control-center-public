@@ -1153,61 +1153,286 @@ export function createProjectActivity(projects, worktrees, sessions, lifecycleAr
   };
 }
 
-function mcpSource(id, name, scope, source, state, configured, note) {
-  return { id, name, scope, source, state, configured, transport: null, note };
+const MAX_MCP_CONFIG_BYTES = 512 * 1024;
+const MAX_MCP_SERVER_DEFINITIONS = 256;
+const MAX_MCP_PROCESS_ENTRIES = 4096;
+
+const MCP_SOURCE_ORDER = [
+  { id: "global-config", name: "Global MCP configuration", scope: "global", source: "global-config", category: "global" },
+  { id: "agents-global-config", name: "Global .agents MCP configuration", scope: "global", source: "global-config", category: "global" },
+  { id: "agents-nested-global-config", name: "Global nested .agents MCP configuration", scope: "global", source: "global-config", category: "global" },
+  { id: "pi-global-config", name: "Pi global MCP configuration", scope: "global", source: "global-config", category: "global" },
+  { id: "project-config", name: "Project MCP configuration", scope: "project", source: "project-config", category: "project" },
+  { id: "pi-project-config", name: "Project Pi MCP configuration", scope: "project", source: "project-config", category: "project" },
+];
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function collectMcpInventory(globalSettingsPath, projectSettingsPath, subagentsPackage) {
-  const globalHealth = inspectJsonFile(globalSettingsPath);
-  const projectHealth = inspectJsonFile(projectSettingsPath);
-  const globalState = !globalHealth.exists ? "UNAVAILABLE" : (globalHealth.readable && globalHealth.valid ? "AVAILABLE_METADATA" : "INVALID_CONFIG");
-  const projectState = !projectHealth.exists ? "UNAVAILABLE" : (projectHealth.readable && projectHealth.valid ? "AVAILABLE_METADATA" : "INVALID_CONFIG");
-  const packageState = subagentsPackage ? "AVAILABLE_METADATA" : "UNAVAILABLE";
+function mcpSourcePathMap(globalSettingsPath, projectSettingsPath) {
+  const agentRoot = globalSettingsPath ? path.dirname(globalSettingsPath) : path.join(HOME, ".pi", "agent");
+  const projectRoot = projectSettingsPath ? path.dirname(path.dirname(projectSettingsPath)) : process.cwd();
+  const globalConfigRoot = path.join(HOME, ".config", "mcp");
+  const agentsRoot = path.join(HOME, ".agents");
+  return [
+    path.join(globalConfigRoot, "mcp.json"),
+    path.join(agentsRoot, "mcp.json"),
+    path.join(agentsRoot, "mcp", "mcp.json"),
+    path.join(agentRoot, "mcp.json"),
+    path.join(projectRoot, ".mcp.json"),
+    path.join(projectRoot, ".pi", "mcp.json"),
+  ];
+}
+
+function defaultMcpSourceSpecs(globalSettingsPath, projectSettingsPath) {
+  return MCP_SOURCE_ORDER.map((source, index) => ({
+    ...source,
+    path: mcpSourcePathMap(globalSettingsPath, projectSettingsPath)[index],
+    precedence: index + 1,
+  }));
+}
+
+function readMcpConfigFile(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > MAX_MCP_CONFIG_BYTES) return { state: "INVALID_CONFIG", servers: [], invalid: true };
+    fs.accessSync(filePath, fs.constants.R_OK);
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!isRecord(raw)) return { state: "INVALID_CONFIG", servers: [], invalid: true };
+    const rawServers = raw.mcpServers ?? raw["mcp-servers"] ?? {};
+    if (!isRecord(rawServers)) return { state: "INVALID_CONFIG", servers: [], invalid: true };
+    const servers = [];
+    let invalidEntries = 0;
+    for (const [name, definition] of Object.entries(rawServers)) {
+      if (servers.length >= MAX_MCP_SERVER_DEFINITIONS) {
+        invalidEntries += 1;
+        continue;
+      }
+      if (!isRecord(definition)) {
+        invalidEntries += 1;
+        continue;
+      }
+      servers.push({ name, definition });
+    }
+    return { state: "AVAILABLE", servers, invalidEntries, invalid: false };
+  } catch {
+    try {
+      fs.statSync(filePath);
+      return { state: "INVALID_CONFIG", servers: [], invalid: true };
+    } catch {
+      return { state: "UNAVAILABLE", servers: [], invalid: false };
+    }
+  }
+}
+
+function mcpTransport(definition) {
+  if (typeof definition.command === "string" && definition.command.trim()) return "stdio";
+  if (typeof definition.url === "string" && definition.url.trim()) return definition.httpTransport === "sse" ? "sse" : "http";
+  return "unknown";
+}
+
+function executableAvailable(command, cwd) {
+  if (typeof command !== "string" || !command.trim()) return false;
+  const candidates = [];
+  if (path.isAbsolute(command) || command.includes(path.sep)) {
+    candidates.push(path.resolve(cwd || process.cwd(), command));
+  } else {
+    for (const directory of String(process.env.PATH || "").split(path.delimiter)) {
+      if (directory) candidates.push(path.join(directory, command));
+    }
+  }
+  return candidates.some((candidate) => {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+function inspectMcpProcesses(definition) {
+  if (typeof definition.command !== "string" || !definition.command.trim()) return "UNSUPPORTED";
+  const expected = path.isAbsolute(definition.command) ? path.resolve(definition.cwd || process.cwd(), definition.command) : path.basename(definition.command);
+  let processEntries;
+  try {
+    processEntries = fs.readdirSync("/proc", { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .sort((left, right) => Number(left.name) - Number(right.name))
+      .slice(0, MAX_MCP_PROCESS_ENTRIES);
+  } catch {
+    return "UNSUPPORTED";
+  }
+  const configuredArgs = Array.isArray(definition.args) ? definition.args.filter((arg) => typeof arg === "string") : [];
+  if (configuredArgs.length === 0) return "UNSUPPORTED";
+  for (const processEntry of processEntries) {
+    try {
+      const args = fs.readFileSync(path.join("/proc", processEntry.name, "cmdline")).toString("utf8").split("\0").filter(Boolean);
+      const executable = fs.realpathSync(path.join("/proc", processEntry.name, "exe"));
+      const commandMatches = path.isAbsolute(definition.command)
+        ? (args.includes(expected) || executable === expected)
+        : (path.basename(args[0] || executable) === expected || path.basename(executable) === expected);
+      const argsMatch = configuredArgs.every((arg, index) => args.includes(arg) || args[index + 1] === arg);
+      if (commandMatches && argsMatch) return "OBSERVED";
+    } catch {
+      // Processes can disappear or be unreadable during the bounded scan.
+    }
+  }
+  return "NOT_OBSERVED";
+}
+
+function mcpLoadability(definition) {
+  if (mcpTransport(definition) !== "stdio") return "UNSUPPORTED";
+  return executableAvailable(definition.command, definition.cwd) ? true : false;
+}
+
+function safeMcpName(name) {
+  const value = String(name).trim();
+  if (!value || /^(?:~|[A-Za-z]:[\\/]|[\\/])/.test(value)) return "redacted-server-name";
+  return value.replace(/[^A-Za-z0-9._ -]+/g, "-").replace(/\s+/g, " ").slice(0, 128) || "server";
+}
+
+function safeMcpId(sourceId, name) {
+  const normalized = safeMcpName(name).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "server";
+  return `mcp:${sourceId}:${normalized}`;
+}
+
+function mcpEntryFromDefinition(source, name, definition, shadowedDefinitions, processInspector) {
+  const transport = mcpTransport(definition);
+  const disabled = definition.disabled === true;
+  const configured = true;
+  const state = disabled ? "UNAVAILABLE" : "CONFIGURED";
+  const running = disabled ? "UNSUPPORTED" : processInspector(definition);
+  const note = disabled
+    ? "Configured MCP is disabled in the winning source; live connectivity is unsupported."
+    : `Configured from the winning ${source.scope} MCP source; live connectivity is unsupported.`;
   return {
-    sourcePolicy: "documented Pi settings and configured Pi package metadata only",
-    entries: [],
-    sources: [
-      mcpSource(
-        "pi-global-settings",
-        "Pi global settings",
-        "global",
-        "~/.pi/agent/settings.json",
-        globalState,
-        false,
-        globalState === "AVAILABLE_METADATA"
-          ? "The documented Pi global settings source is readable; it defines no built-in MCP server entries."
-          : (globalState === "UNAVAILABLE" ? "No readable global Pi settings source is available for MCP metadata." : "The global Pi settings source is not valid readable JSON."),
-      ),
-      mcpSource(
-        "pi-project-settings",
-        "Pi project settings",
-        "project",
-        ".pi/settings.json",
-        projectState,
-        false,
-        projectState === "AVAILABLE_METADATA"
-          ? "The current project settings source is readable; Pi documents no built-in MCP server entries in this surface."
-          : (projectState === "UNAVAILABLE" ? "No project-local Pi settings file is present for MCP metadata." : "The project Pi settings source is not valid readable JSON."),
-      ),
-      mcpSource(
-        "pi-extension-package-surface",
-        "Pi extension/package surface",
-        "extension/package",
-        "configured Pi package metadata",
-        packageState,
-        false,
-        packageState === "AVAILABLE_METADATA"
-          ? "Configured package metadata is readable; extensions may add MCP support, but no MCP-specific entry is declared here."
-          : "No configured Pi package metadata is available for MCP integration inspection.",
-      ),
-    ],
+    id: safeMcpId(source.id, name),
+    name: safeMcpName(name),
+    scope: source.scope,
+    source: source.source,
+    state,
+    transport,
+    provider: "pi-mcp-adapter",
+    configured,
+    loadable: disabled ? "UNSUPPORTED" : mcpLoadability(definition),
+    running,
+    connected: "UNSUPPORTED",
+    shadowedDefinitions,
+    note,
+  };
+}
+
+function configuredMcpAdapterPackage(globalSettingsPath, projectSettingsPath) {
+  for (const [settingsPath, scope] of [[globalSettingsPath, "global"], [projectSettingsPath, "project"]]) {
+    const settings = settingsPath ? readJson(settingsPath) : null;
+    const packages = configuredPackageEntries(settings, scope);
+    for (const entry of packages) {
+      const source = typeof entry.pkg === "string" ? entry.pkg : entry.pkg?.source;
+      if (packageName(source) !== "pi-mcp-adapter") continue;
+      const root = installedPackageRoot(source, scope);
+      const manifest = root ? readJson(path.join(root, "package.json")) : null;
+      if (manifest?.name === "pi-mcp-adapter") return { scope, version: typeof manifest.version === "string" ? manifest.version : null };
+    }
+  }
+  return null;
+}
+
+function mcpPiSettingsSource(globalSettingsPath) {
+  const health = inspectJsonFile(globalSettingsPath);
+  const settings = globalSettingsPath ? readJson(globalSettingsPath) : null;
+  const packages = configuredPackageEntries(settings, "global");
+  const adapterConfigured = packages.some((entry) => packageName(typeof entry.pkg === "string" ? entry.pkg : entry.pkg?.source) === "pi-mcp-adapter");
+  return {
+    id: "pi-global-settings-mcp",
+    name: "Pi global package/settings source",
+    scope: "global",
+    source: "pi-settings",
+    state: !health.exists ? "UNAVAILABLE" : (health.readable && health.valid ? "AVAILABLE_METADATA" : "INVALID_CONFIG"),
+    configured: adapterConfigured,
+    transport: null,
+    note: adapterConfigured
+      ? "Pi global settings select the pi-mcp-adapter package; explicit MCP configuration is read separately."
+      : "Pi global settings were inspected for bounded MCP adapter package metadata; no adapter selection was observed.",
+  };
+}
+
+function mcpPackageSource(globalSettingsPath, projectSettingsPath) {
+  const adapter = configuredMcpAdapterPackage(globalSettingsPath, projectSettingsPath);
+  const state = adapter ? "AVAILABLE_METADATA" : "UNAVAILABLE";
+  return {
+    id: "pi-mcp-adapter-package",
+    name: "Pi MCP adapter package",
+    scope: "extension/package",
+    source: "package",
+    state,
+    configured: Boolean(adapter),
+    transport: null,
+    note: adapter
+      ? `The configured pi-mcp-adapter package is readable; explicit MCP configuration is inspected without loading extensions or connecting servers.`
+      : "The configured pi-mcp-adapter package was not found in the bounded Pi package locations.",
+  };
+}
+
+export function collectMcpInventory(globalSettingsPath, projectSettingsPath, subagentsPackage, options = {}) {
+  const sourceSpecs = options.sourceSpecs ?? defaultMcpSourceSpecs(globalSettingsPath, projectSettingsPath);
+  const processInspector = options.processInspector ?? inspectMcpProcesses;
+  const runningCache = new Map();
+  const observeRunning = (definition) => {
+    const key = JSON.stringify({ command: definition.command, args: definition.args, cwd: definition.cwd });
+    if (!runningCache.has(key)) runningCache.set(key, processInspector(definition));
+    return runningCache.get(key);
+  };
+  const sources = [];
+  const effective = new Map();
+  for (const source of sourceSpecs) {
+    const health = readMcpConfigFile(source.path);
+    const configured = health.state === "AVAILABLE" && health.servers.length > 0;
+    const invalidEntryNote = health.invalidEntries > 0 ? ` ${health.invalidEntries} invalid server definition(s) were omitted.` : "";
+    const note = health.state === "UNAVAILABLE"
+      ? "This optional explicit MCP configuration source is not present."
+      : health.state === "INVALID_CONFIG"
+        ? "This explicit MCP configuration source is unreadable or malformed; raw configuration is omitted."
+        : `This explicit MCP configuration source is readable; ${health.servers.length} server definition(s) were inspected.${invalidEntryNote}`;
+    const sourceRecord = {
+      id: source.id,
+      name: source.name,
+      scope: source.scope,
+      source: source.source,
+      precedence: source.precedence,
+      state: health.state,
+      configured,
+      transport: null,
+      note,
+    };
+    sources.push(sourceRecord);
+    if (health.state !== "AVAILABLE") continue;
+    for (const server of health.servers) {
+      const previous = effective.get(server.name);
+      effective.set(server.name, {
+        source,
+        definition: server.definition,
+        shadowedDefinitions: (previous?.shadowedDefinitions ?? 0) + (previous ? 1 : 0),
+      });
+    }
+  }
+  sources.push(mcpPiSettingsSource(globalSettingsPath));
+  sources.push(mcpPackageSource(globalSettingsPath, projectSettingsPath));
+  const entries = [...effective.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, value]) => mcpEntryFromDefinition(value.source, name, value.definition, value.shadowedDefinitions, observeRunning));
+  return {
+    sourcePolicy: "Pi MCP adapter explicit configuration sources only; raw configuration and runtime MCP contents are never exposed.",
+    entries,
+    sources,
     connectivity: {
       status: "UNSUPPORTED",
-      note: "Pi core does not provide a built-in MCP runtime feed; this standalone dashboard does not attach to extension or MCP processes.",
+      note: "Live MCP connectivity is intentionally unsupported; no initialize, handshake, tool, resource, prompt, or protocol probe is performed.",
     },
     resolution: {
-      status: "UNSUPPORTED",
-      note: "No MCP entries were discovered, so scope precedence cannot be determined from local evidence.",
+      status: "SUPPORTED_SCOPED",
+      note: "Explicit MCP configuration precedence is resolved in the documented pi-mcp-adapter order; package/plugin-defined MCP servers and runtime-effective state remain outside this scope.",
     },
   };
 }
@@ -1514,8 +1739,12 @@ export function collectDiagnostics(evidence, live = null) {
   const skillGlobalSources = skillSources.filter((source) => source.scope === "global");
   const skillProjectSources = skillSources.filter((source) => source.scope === "project");
   const skillPackageSources = skillSources.filter((source) => source.source === "package");
-  const mcpGlobal = evidence.mcp.sources.find((source) => source.id === "pi-global-settings");
-  const mcpProject = evidence.mcp.sources.find((source) => source.id === "pi-project-settings");
+  const mcpGlobalSources = evidence.mcp.sources.filter((source) => source.source === "global-config");
+  const mcpProjectSources = evidence.mcp.sources.filter((source) => source.source === "project-config");
+  const mcpGlobal = mcpGlobalSources.find((source) => source.id === "global-config") ?? mcpGlobalSources[0];
+  const mcpProject = mcpProjectSources.find((source) => source.id === "project-config") ?? mcpProjectSources[0];
+  const mcpGlobalInvalid = mcpGlobalSources.some((source) => source.state === "INVALID_CONFIG");
+  const mcpProjectInvalid = mcpProjectSources.some((source) => source.state === "INVALID_CONFIG");
   const checks = [
     diagnostic(
       "pi-cli",
@@ -1784,16 +2013,16 @@ export function collectDiagnostics(evidence, live = null) {
     diagnostic(
       "mcp-global-config",
       "MCP global configuration source",
-      mcpGlobal.state === "INVALID_CONFIG" ? "ERROR" : "PASS",
-      mcpGlobal.note,
-      "documented Pi global settings",
+      mcpGlobalInvalid ? "ERROR" : "PASS",
+      mcpGlobalInvalid ? "One or more supported global MCP configuration sources are malformed; raw configuration is omitted." : mcpGlobal.note,
+      "documented global MCP configuration",
     ),
     diagnostic(
       "mcp-project-config",
       "MCP project configuration source",
-      mcpProject.state === "INVALID_CONFIG" ? "ERROR" : "PASS",
-      mcpProject.note,
-      "documented Pi project settings",
+      mcpProjectInvalid ? "ERROR" : "PASS",
+      mcpProjectInvalid ? "One or more supported project MCP configuration sources are malformed; raw configuration is omitted." : mcpProject.note,
+      "documented project MCP configuration",
     ),
     diagnostic(
       "mcp-inventory",

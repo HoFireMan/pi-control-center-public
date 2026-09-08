@@ -139,21 +139,26 @@ function renderMcp(data) {
         <td class="diagnostic-label">${html(entry.name)}<small class="small-meta">${html(entry.id)}</small></td>
         <td>${html(entry.scope)}</td>
         <td>${html(entry.source)}</td>
-        <td>${html(entry.transport)}</td>
         <td><span class="${diagnosticClass(entry.state)}">${html(entry.state)}</span></td>
-        <td>${html(entry.note)}</td>
+        <td>${html(entry.transport)}</td>
+        <td>${entry.configured ? "yes" : "no"}</td>
+        <td>${html(entry.loadable)}</td>
+        <td>${html(entry.running)}</td>
+        <td>${html(entry.connected)}</td>
+        <td>${html(entry.note)}${entry.shadowedDefinitions ? ` <small class="small-meta">${entry.shadowedDefinitions} shadowed definition(s)</small>` : ""}</td>
       </tr>`).join("")
-    : '<tr><td colspan="6" class="empty">No MCP entries were discovered from documented Pi surfaces.</td></tr>';
+    : '<tr><td colspan="10" class="empty">No MCP entries were discovered from the supported Pi adapter configuration surface.</td></tr>';
   $("#mcp-sources-body").innerHTML = sources.length
     ? sources.map((source) => `<tr>
         <td class="diagnostic-label">${html(source.name)}<small class="small-meta">${html(source.id)}</small></td>
         <td>${html(source.scope)}</td>
         <td>${html(source.source)}</td>
+        <td>${html(source.precedence, "—")}</td>
         <td><span class="${diagnosticClass(source.state)}">${html(source.state)}</span></td>
         <td>${source.configured ? "yes" : "no"}</td>
         <td>${html(source.note)}</td>
       </tr>`).join("")
-    : '<tr><td colspan="6" class="empty">No MCP configuration surfaces were available.</td></tr>';
+    : '<tr><td colspan="7" class="empty">No MCP configuration surfaces were available.</td></tr>';
 }
 
 function renderUsage(data) {

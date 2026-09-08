@@ -329,7 +329,7 @@
 
         <div id="mcp-page" class="page hidden">
           <header class="page-header">
-            <div><p class="eyebrow">Read-only integration inventory</p><h1>MCP</h1><p class="muted">Configured MCP metadata from documented Pi surfaces only.</p></div>
+            <div><p class="eyebrow">Read-only integration inventory</p><h1>MCP</h1><p class="muted">Configured MCP metadata from the supported Pi adapter configuration surface.</p></div>
             <div class="header-actions"><div id="mcp-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-mcp" type="button">Refresh</button></div>
           </header>
           <section class="status-grid mcp-summary" aria-label="MCP inventory summary">
@@ -338,18 +338,18 @@
             <article class="card status-card"><div class="card-label">Live connectivity</div><strong id="mcp-connectivity" class="metric compact">—</strong><p class="muted">not inferred from config</p></article>
           </section>
           <section class="section-block first-section">
-            <div class="notice-card"><strong>Evidence boundary</strong><span id="mcp-policy">Only documented Pi settings and configured package metadata are inspected. Configuration presence does not mean connected, running, or healthy.</span></div>
+            <div class="notice-card"><strong>Evidence boundary</strong><span id="mcp-policy">Only the supported explicit Pi adapter configuration surface is inspected. Configuration, loadability, running, and connectivity remain separate evidence states.</span></div>
             <div class="section-heading"><div><p class="eyebrow">Configured entries</p><h2>MCP inventory</h2></div></div>
             <div class="card table-card mcp-table-card"><div class="table-scroll"><table>
-              <thead><tr><th>Name</th><th>Scope</th><th>Source</th><th>Transport</th><th>State</th><th>Notes</th></tr></thead>
-              <tbody id="mcp-entries-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+              <thead><tr><th>Name</th><th>Scope</th><th>Source</th><th>State</th><th>Transport</th><th>Configured</th><th>Loadable</th><th>Running</th><th>Connected</th><th>Notes</th></tr></thead>
+              <tbody id="mcp-entries-body"><tr><td colspan="10" class="empty">Loading…</td></tr></tbody>
             </table></div></div>
           </section>
           <section class="section-block">
             <div class="section-heading"><div><p class="eyebrow">Available configuration surfaces</p><h2>Sources inspected</h2></div></div>
             <div class="card table-card mcp-table-card"><div class="table-scroll"><table>
-              <thead><tr><th>Surface</th><th>Scope</th><th>Source</th><th>State</th><th>Configured</th><th>Notes</th></tr></thead>
-              <tbody id="mcp-sources-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+              <thead><tr><th>Surface</th><th>Scope</th><th>Source</th><th>Precedence</th><th>State</th><th>Configured</th><th>Notes</th></tr></thead>
+              <tbody id="mcp-sources-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
             </table></div></div>
           </section>
           <footer class="footer">Read-only MCP metadata · no config editing, credentials, transport inspection, or tool execution</footer>
