@@ -39,6 +39,12 @@ function number(value) {
   return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "Unavailable";
 }
 
+function gpt56InputFootprintMetric(over, eligible) {
+  if (typeof over !== "number" || !Number.isFinite(over) || typeof eligible !== "number" || !Number.isFinite(eligible)) return "Unavailable";
+  const percentage = eligible > 0 ? ` (${((over / eligible) * 100).toFixed(2)}%)` : " (—)";
+  return `${number(over)} / ${number(eligible)}${percentage}`;
+}
+
 function usd(value) {
   return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(4)}` : "Unavailable";
 }
@@ -195,7 +201,10 @@ function renderUsage(data) {
   $("#usage-context-window").textContent = number(context.contextWindowTokens);
   $("#usage-context-threshold").textContent = number(context.compactionThresholdTokens);
   $("#usage-context-coverage").textContent = `${number(context.knownPolicyObservations ?? 0)} / ${number(context.assistantObservations ?? 0)}`;
-  $("#usage-context-272k").textContent = number(context.gpt56InputFootprintOver272K ?? 0);
+  $("#usage-context-272k").textContent = gpt56InputFootprintMetric(
+    context.gpt56InputFootprintOver272K ?? 0,
+    context.gpt56InputFootprintEligible ?? 0,
+  );
   $("#usage-context-over80").textContent = number(context.runtimeOver80PercentCeiling ?? 0);
   $("#usage-context-over-threshold").textContent = number(context.runtimeAboveCompactionThreshold ?? 0);
   $("#usage-context-compactions").textContent = number(context.actualCompactions ?? 0);

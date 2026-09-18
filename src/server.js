@@ -322,6 +322,7 @@ function usageContextResponse(context = {}) {
     peakRuntimeContextTokens: context.peakRuntimeContextTokens ?? null,
     p95RuntimeContextTokens: context.p95RuntimeContextTokens ?? null,
     averageRuntimeContextTokens: context.averageRuntimeContextTokens ?? null,
+    gpt56InputFootprintEligible: Number.isInteger(context.gpt56InputFootprintEligible) ? context.gpt56InputFootprintEligible : 0,
     gpt56InputFootprintOver272K: Number.isInteger(context.gpt56InputFootprintOver272K) ? context.gpt56InputFootprintOver272K : 0,
     runtimeOver80PercentCeiling: Number.isInteger(context.runtimeOver80PercentCeiling) ? context.runtimeOver80PercentCeiling : 0,
     runtimeAboveCompactionThreshold: Number.isInteger(context.runtimeAboveCompactionThreshold) ? context.runtimeAboveCompactionThreshold : 0,

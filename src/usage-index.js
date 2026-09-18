@@ -362,6 +362,11 @@ function averageRounded(values) {
   return values.length === 0 ? null : Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 }
 
+function validInputFootprint(record) {
+  const usage = record.usage;
+  return Boolean(usage) && [usage.input, usage.cacheRead, usage.cacheWrite].every((value) => Number.isSafeInteger(value) && value >= 0);
+}
+
 function contextAnalytics(records, contextCompactions, startMs, endMs) {
   const assistants = records.filter((record) => record.kind === "assistant"
     && record.timestampMs !== null
@@ -395,8 +400,9 @@ function contextAnalytics(records, contextCompactions, startMs, endMs) {
       && record.compactionReserveTokens <= record.contextWindowTokens
       && record.runtimeContextTokens > record.contextWindowTokens - record.compactionReserveTokens) runtimeAboveCompactionThreshold += 1;
   }
-  const gpt56InputFootprintOver272K = assistants.filter((record) => /^gpt-5\.6-/i.test(record.model ?? "")
-    && record.usage.input + record.usage.cacheRead + record.usage.cacheWrite > 272_000).length;
+  const gpt56InputFootprintEligibleRows = assistants.filter((record) => /^gpt-5\.6-/i.test(record.model ?? "") && validInputFootprint(record));
+  const gpt56InputFootprintEligible = gpt56InputFootprintEligibleRows.length;
+  const gpt56InputFootprintOver272K = gpt56InputFootprintEligibleRows.filter((record) => record.usage.input + record.usage.cacheRead + record.usage.cacheWrite > 272_000).length;
   const selectedCompactions = (contextCompactions ?? []).filter((compaction) => compaction.timestampMs !== null
     && (startMs === null || compaction.timestampMs >= startMs)
     && (endMs === null || compaction.timestampMs <= endMs));
@@ -412,6 +418,7 @@ function contextAnalytics(records, contextCompactions, startMs, endMs) {
     peakRuntimeContextTokens: runtimeValues.length ? Math.max(...runtimeValues) : null,
     p95RuntimeContextTokens: nearestRankP95(runtimeValues),
     averageRuntimeContextTokens: averageRounded(runtimeValues),
+    gpt56InputFootprintEligible,
     gpt56InputFootprintOver272K,
     runtimeOver80PercentCeiling,
     runtimeAboveCompactionThreshold,
