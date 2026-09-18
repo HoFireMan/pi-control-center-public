@@ -43,6 +43,14 @@ function usd(value) {
   return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(4)}` : "Unavailable";
 }
 
+function usdPerMillion(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(4)}` : "—";
+}
+
+function usageKinds(kinds = []) {
+  return kinds.map((kind) => `${html(kind.kind)} (${number(kind.recordCount)})`).join(" · ") || "—";
+}
+
 function listItems(selector, values) {
   $(selector).innerHTML = values.map((value) => `<li>${html(value)}</li>`).join("");
 }
@@ -175,6 +183,23 @@ function renderUsage(data) {
   $("#usage-cache").textContent = number((tokens.cacheRead ?? 0) + (tokens.cacheWrite ?? 0));
   $("#usage-cost").textContent = cost.status === "UNSUPPORTED" ? "Unsupported" : usd(cost.amount);
   $("#usage-cost-detail").textContent = cost.status === "UNSUPPORTED" ? text(cost.note) : `${text(cost.currency)} · ${text(cost.status)}`;
+  const context = summary.context ?? {};
+  const reasons = context.compactionsByReason ?? {};
+  $("#usage-context-policy").textContent = text(context.policyMode, "UNKNOWN");
+  $("#usage-context-policy").className = `count-badge ${diagnosticClass(context.policyMode ?? "UNKNOWN")}`;
+  $("#usage-context-policy-detail").textContent = text(context.policyMode, "UNKNOWN");
+  $("#usage-context-peak-request").textContent = number(context.peakRequestContextTokens);
+  $("#usage-context-p95-request").textContent = number(context.p95RequestContextTokens);
+  $("#usage-context-peak-runtime").textContent = number(context.peakRuntimeContextTokens);
+  $("#usage-context-p95-runtime").textContent = number(context.p95RuntimeContextTokens);
+  $("#usage-context-window").textContent = number(context.contextWindowTokens);
+  $("#usage-context-threshold").textContent = number(context.compactionThresholdTokens);
+  $("#usage-context-coverage").textContent = `${number(context.knownPolicyObservations ?? 0)} / ${number(context.assistantObservations ?? 0)}`;
+  $("#usage-context-272k").textContent = number(context.gpt56InputFootprintOver272K ?? 0);
+  $("#usage-context-over80").textContent = number(context.runtimeOver80PercentCeiling ?? 0);
+  $("#usage-context-over-threshold").textContent = number(context.runtimeAboveCompactionThreshold ?? 0);
+  $("#usage-context-compactions").textContent = number(context.actualCompactions ?? 0);
+  $("#usage-context-reasons").textContent = `manual ${number(reasons.manual ?? 0)} · threshold ${number(reasons.threshold ?? 0)} · overflow ${number(reasons.overflow ?? 0)} · unknown ${number(reasons.unknown ?? 0)}`;
   $("#usage-records").textContent = `${number(summary.recordCount)} records · ${number(summary.sessionCount)} sessions`;
   $("#usage-date-range").textContent = summary.dateRange?.start && summary.dateRange?.end
     ? `${date(summary.dateRange.start)} → ${date(summary.dateRange.end)}` : "No valid event timestamps";
@@ -186,10 +211,42 @@ function renderUsage(data) {
   $("#usage-model-detail").textContent = `${number(data.modelAttribution?.unknownRecords)} records have no reliable model attribution.`;
   $("#usage-project-detail").textContent = `${number(data.projectAttribution?.unattributedRecords)} records remain UNATTRIBUTED.`;
   $("#usage-token-categories").innerHTML = (data.tokenCategories ?? []).map((category) => `<tr><td>${html(category.key)}</td><td><span class="${diagnosticClass(category.status)}">${html(category.status)}</span></td><td>${html(category.note)}</td></tr>`).join("") || '<tr><td colspan="3" class="empty">No token categories available.</td></tr>';
-  $("#usage-models-body").innerHTML = (summary.byModel ?? []).map((row) => `<tr><td>${html(row.provider)}</td><td>${html(row.model)}</td><td>${number(row.recordCount)}</td><td>${number(row.tokens?.total)}</td><td>${usd(row.cost?.totalUsd)}</td></tr>`).join("") || '<tr><td colspan="5" class="empty">No model-attributed usage found.</td></tr>';
+  $("#usage-models-body").innerHTML = (summary.byModel ?? []).map((row) => {
+    const rates = row.effectiveCostPerMillion ?? {};
+    const cacheTokens = (row.tokens?.cacheRead ?? 0) + (row.tokens?.cacheWrite ?? 0);
+    return `<tr><td>${html(row.provider)}</td><td>${html(row.model)}</td><td>${usageKinds(row.recordKinds)}</td><td>${number(row.recordCount)}</td><td>${number(row.tokens?.input)}</td><td>${usdPerMillion(rates.inputUsd)}</td><td>${number(row.tokens?.output)}</td><td>${usdPerMillion(rates.outputUsd)}</td><td>${number(cacheTokens)}</td><td>${usdPerMillion(rates.cacheUsd)}</td><td>${number(row.tokens?.total)}</td><td>${usdPerMillion(rates.totalUsd)}</td><td>${usd(row.cost?.totalUsd)}</td></tr>`;
+  }).join("") || '<tr><td colspan="13" class="empty">No model-attributed usage found.</td></tr>';
   $("#usage-projects-body").innerHTML = (summary.byProject ?? []).map((row) => `<tr><td>${html(row.project)}</td><td>${number(row.recordCount)}</td><td>${number(row.tokens?.total)}</td><td>${usd(row.cost?.totalUsd)}</td></tr>`).join("") || '<tr><td colspan="4" class="empty">No project-attributed usage found.</td></tr>';
   $("#usage-limitations").innerHTML = (data.limitations ?? []).map((limitation) => `<li>${html(limitation)}</li>`).join("") || "<li>No additional limitations reported.</li>";
   $("#usage-refresh-status").textContent = `Evidence refreshed ${new Date(data.generatedAt).toLocaleTimeString()}`;
+}
+
+function quotaPercent(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) return "Unavailable";
+  return `${Number.isInteger(value) ? value : value.toFixed(1)}%`;
+}
+
+function renderCodexQuota(data) {
+  const availability = text(data.availability, "UNAVAILABLE");
+  const status = $("#codex-quota-availability");
+  status.textContent = availability;
+  status.className = `count-badge ${diagnosticClass(availability)}`;
+  const renderWindow = (prefix, key) => {
+    const window = data[key];
+    const state = data.windowStatus?.[key] ?? (window ? availability : "UNAVAILABLE");
+    $(`#codex-quota-${prefix}-status`).textContent = state;
+    $(`#codex-quota-${prefix}-remaining`).textContent = window ? quotaPercent(window.remainingPercent) : "Unavailable";
+    $(`#codex-quota-${prefix}-used`).textContent = window ? `Used: ${quotaPercent(window.usedPercent)}` : "Used: unavailable";
+    $(`#codex-quota-${prefix}-reset`).textContent = window ? `Resets: ${date(window.resetsAt)}` : `Resets: ${state === "EXPIRED" ? "expired" : "unavailable"}`;
+  };
+  renderWindow("session", "session5h");
+  renderWindow("weekly", "weekly");
+  $("#codex-quota-observed").textContent = date(data.observedAt);
+  $("#codex-quota-source").textContent = data.source === "PI_PROVIDER_RESPONSE_HEADERS" ? "Pi Codex response headers" : "Unavailable";
+  $("#codex-quota-source-note").textContent = data.source === "PI_PROVIDER_RESPONSE_HEADERS"
+    ? "Quota percentages come only from sanitized Pi Codex response headers; they are not billing or account-complete usage."
+    : "No valid Pi Codex response-header quota observation is available; no percentage is inferred.";
+  $("#codex-quota-limitations").textContent = (data.limitations ?? []).join(" ") || "Unavailable";
 }
 
 function worktreeState(worktree) {
@@ -551,6 +608,17 @@ async function loadProjects() {
   }
 }
 
+async function loadCodexQuota() {
+  try {
+    const response = await fetch("/api/codex-quota", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderCodexQuota(await response.json());
+  } catch (error) {
+    renderCodexQuota({ availability: "UNAVAILABLE", limitations: ["Codex quota evidence could not be read."] });
+    console.error(error);
+  }
+}
+
 async function loadUsage() {
   $("#usage-refresh-status").textContent = "Refreshing…";
   try {
@@ -562,6 +630,10 @@ async function loadUsage() {
     $("#usage-refresh-status").textContent = "Evidence unavailable";
     console.error(error);
   }
+}
+
+async function loadUsageAndQuota() {
+  await Promise.all([loadUsage(), loadCodexQuota()]);
 }
 
 async function loadSettings() {
@@ -646,7 +718,7 @@ function showPage() {
     if (page === "settings") loadSettings();
     else if (page === "skills") loadSkills();
     else if (page === "worktrees") loadWorktrees();
-    else if (page === "usage") loadUsage();
+    else if (page === "usage") loadUsageAndQuota();
     else if (page === "projects") loadProjects();
     else if (page === "diagnostics") loadDiagnostics();
     else if (page === "mcp") loadMcp();
@@ -659,8 +731,8 @@ $("#refresh-settings").addEventListener("click", loadSettings);
 $("#refresh-observability").addEventListener("click", loadObservability);
 $("#refresh-skills").addEventListener("click", loadSkills);
 $("#refresh-worktrees").addEventListener("click", loadWorktrees);
-$("#refresh-usage").addEventListener("click", loadUsage);
-$("#usage-window").addEventListener("change", loadUsage);
+$("#refresh-usage").addEventListener("click", loadUsageAndQuota);
+$("#usage-window").addEventListener("change", loadUsageAndQuota);
 $("#refresh-projects").addEventListener("click", loadProjects);
 $("#refresh-diagnostics").addEventListener("click", loadDiagnostics);
 $("#refresh-mcp").addEventListener("click", loadMcp);

@@ -1919,10 +1919,13 @@ export function collectDiagnostics(evidence, live = null) {
     ),
     diagnostic(
       "usage-index",
-      "Usage derived index",
-      !usage ? "ERROR" : usageIndexDiagnostics(usage).status === "ERROR" ? "ERROR" : (usageIndexDiagnostics(usage).status === "UNSUPPORTED" ? "UNSUPPORTED" : (usageIndexDiagnostics(usage).status === "FALLBACK_LEGACY" ? "WARN" : "PASS")),
+      "Usage history",
+      !usage ? "ERROR" : (() => {
+        const status = usageIndexDiagnostics(usage).status;
+        return status === "ERROR" ? "ERROR" : (status === "UNSUPPORTED" ? "UNSUPPORTED" : (status === "WARN" || status === "FALLBACK_LEGACY" ? "WARN" : "PASS"));
+      })(),
       !usage ? "Usage evidence was not collected." : usageIndexDiagnostics(usage).explanation,
-      "private rebuildable SQLite-derived Usage index",
+      "private durable or fallback Usage evidence collector",
     ),
     diagnostic(
       "usage-source-accessibility",

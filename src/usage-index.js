@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
+import { collectDurableUsage } from "./usage-history.js";
 
 const HOME = os.homedir();
 const CODE_ROOT = path.join(HOME, "code");
@@ -10,9 +11,13 @@ const SESSION_ROOT = path.join(HOME, ".pi", "agent", "sessions");
 const USAGE_TOKEN_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"];
 const USAGE_COST_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "total"];
 const USAGE_WINDOW_DAYS = { last7: 7, last30: 30 };
+const USAGE_RECORD_KINDS = ["assistant", "toolResult", "compaction", "branch_summary"];
+const CONTEXT_OBSERVATION_TYPE = "pi-control-center-context-observation-v1";
+const COMPACTION_OBSERVATION_TYPE = "pi-control-center-compaction-observation-v1";
+const COMPACTION_REASONS = new Set(["manual", "threshold", "overflow"]);
 const INDEX_SCHEMA_VERSION = "1";
-const EXTRACTOR_VERSION = "1";
-const AGGREGATOR_VERSION = "1";
+const EXTRACTOR_VERSION = "2";
+const AGGREGATOR_VERSION = "3";
 const APPLICATION_ID = 0x50434355;
 const APPLICATION_NAME = "PI_CONTROL_CENTER_USAGE";
 const INDEX_DIRECTORY_NAME = "pi-control-center";
@@ -63,19 +68,89 @@ function safeSignatureKey(value) {
 
 function usageFromEntry(entry) {
   if (entry.type === "message" && entry.message?.role === "assistant" && entry.message.usage) {
-    return { kind: "assistant", usage: entry.message.usage, provider: entry.message.provider, model: entry.message.responseModel ?? entry.message.model };
+    return { kind: "assistant", usage: entry.message.usage, provider: entry.message.provider, model: entry.message.responseModel ?? entry.message.model, attributionConfidence: "DIRECT_PERSISTED" };
   }
   if (entry.type === "message" && entry.message?.role === "toolResult" && entry.message.usage) {
-    return { kind: "toolResult", usage: entry.message.usage, provider: null, model: null };
+    return { kind: "toolResult", usage: entry.message.usage, provider: null, model: null, attributionConfidence: null };
   }
-  if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
-    return { kind: "summary", usage: entry.usage, provider: null, model: null };
+  if (entry.type === "compaction" && entry.usage) {
+    return { kind: "compaction", usage: entry.usage, provider: null, model: null, attributionConfidence: null, fromHook: entry.fromHook };
+  }
+  if (entry.type === "branch_summary" && entry.usage) {
+    return { kind: "branch_summary", usage: entry.usage, provider: null, model: null, attributionConfidence: null, fromHook: entry.fromHook };
   }
   return null;
 }
 
+function validString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function modelStateFromEntry(entry) {
+  if (entry.type === "model_change") {
+    return { provider: entry.provider, model: entry.modelId };
+  }
+  if (entry.type === "message" && entry.message?.role === "assistant") {
+    return { provider: entry.message.provider, model: entry.message.model };
+  }
+  return null;
+}
+
+function sessionEntryState(entry) {
+  const message = entry.message && typeof entry.message === "object" && !Array.isArray(entry.message) ? entry.message : null;
+  return {
+    type: entry.type,
+    parentId: typeof entry.parentId === "string" && entry.parentId.length > 0 ? entry.parentId : null,
+    role: typeof message?.role === "string" ? message.role : null,
+    modelState: modelStateFromEntry(entry),
+  };
+}
+
 function finiteNonNegative(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function safeObservationInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function observationHash(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value) ? value : null;
+}
+
+function boundedObservationLabel(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 128 && !value.includes("\u0000") ? value : null;
+}
+
+function normalizedContextObservation(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const assistantEntryKeyHash = observationHash(data.assistantEntryKeyHash);
+  if (!assistantEntryKeyHash) return null;
+  const values = ["runtimeContextTokens", "contextWindowTokens", "compactionReserveTokens"];
+  const result = { assistantEntryKeyHash };
+  for (const field of values) {
+    if (data[field] !== null && data[field] !== undefined && safeObservationInteger(data[field]) === null) return null;
+    result[field] = data[field] === null || data[field] === undefined ? null : data[field];
+  }
+  return result;
+}
+
+function normalizedCompactionObservation(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const compactionEntryKeyHash = observationHash(data.compactionEntryKeyHash);
+  if (!compactionEntryKeyHash) return null;
+  const result = { compactionEntryKeyHash };
+  result.reason = data.reason === null || data.reason === undefined ? null : (COMPACTION_REASONS.has(data.reason) ? data.reason : null);
+  if (data.reason !== null && data.reason !== undefined && result.reason === null) return null;
+  for (const field of ["contextWindowTokens", "compactionReserveTokens"]) {
+    if (data[field] !== null && data[field] !== undefined && safeObservationInteger(data[field]) === null) return null;
+    result[field] = data[field] === null || data[field] === undefined ? null : data[field];
+  }
+  result.provider = data.provider === null || data.provider === undefined ? null : boundedObservationLabel(data.provider);
+  result.model = data.model === null || data.model === undefined ? null : boundedObservationLabel(data.model);
+  if ((data.provider !== null && data.provider !== undefined && result.provider === null)
+    || (data.model !== null && data.model !== undefined && result.model === null)) return null;
+  return result;
 }
 
 function normalizedUsage(usage) {
@@ -98,16 +173,17 @@ function normalizedUsage(usage) {
   return result;
 }
 
-function listSessionFiles(directory, result = []) {
+function listSessionFiles(directory, result = [], state = { complete: true }) {
   let entries;
   try {
     entries = fs.readdirSync(directory, { withFileTypes: true });
   } catch {
+    state.complete = false;
     return result;
   }
   for (const entry of entries) {
     const filePath = path.join(directory, entry.name);
-    if (entry.isDirectory()) listSessionFiles(filePath, result);
+    if (entry.isDirectory()) listSessionFiles(filePath, result, state);
     else if (entry.isFile() && entry.name.endsWith(".jsonl")) result.push(filePath);
   }
   return result;
@@ -118,11 +194,18 @@ export function readUsageArtifact(filePath) {
   try {
     text = fs.readFileSync(filePath, "utf8");
   } catch {
-    return { readable: false, header: null, entryIds: new Set(), entrySignatures: new Map(), records: [], parseErrors: 0 };
+    return { readable: false, header: null, entryIds: new Set(), entrySignatures: new Map(), entryStates: new Map(), entryOrder: [], entryPositions: new Map(), duplicateEntryIds: new Set(), records: [], compactions: [], contextObservations: [], compactionObservations: [], parseErrors: 0 };
   }
   const records = [];
+  const compactions = [];
+  const contextObservations = [];
+  const compactionObservations = [];
   const entryIds = new Set();
   const entrySignatures = new Map();
+  const entryStates = new Map();
+  const entryOrder = [];
+  const entryPositions = new Map();
+  const duplicateEntryIds = new Set();
   let header = null;
   let parseErrors = 0;
   for (const line of text.split(/\r?\n/)) {
@@ -136,11 +219,35 @@ export function readUsageArtifact(filePath) {
     const signature = typeof entry.id === "string" && entry.id.length > 0
       ? `${entry.type ?? ""}|${entry.parentId ?? ""}|${entry.timestamp ?? ""}`
       : null;
-    if (signature) { entryIds.add(entry.id); entrySignatures.set(entry.id, signature); }
+    if (signature) {
+      if (entryIds.has(entry.id)) duplicateEntryIds.add(entry.id);
+      entryIds.add(entry.id);
+      entrySignatures.set(entry.id, signature);
+      entryStates.set(entry.id, sessionEntryState(entry));
+      entryPositions.set(entry.id, entryOrder.length);
+      entryOrder.push(entry.id);
+    }
+    const timestamp = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+    if (entry.type === "compaction" && typeof entry.id === "string" && entry.id.length > 0 && Number.isFinite(timestamp)) {
+      compactions.push({
+        id: entry.id,
+        signature,
+        timestampMs: timestamp,
+        tokensBefore: safeObservationInteger(entry.tokensBefore),
+        fromHook: entry.fromHook === true ? true : entry.fromHook === false ? false : undefined,
+      });
+    }
+    if (entry.type === "custom" && entry.customType === CONTEXT_OBSERVATION_TYPE) {
+      const observation = normalizedContextObservation(entry.data);
+      if (observation) contextObservations.push(observation);
+    }
+    if (entry.type === "custom" && entry.customType === COMPACTION_OBSERVATION_TYPE) {
+      const observation = normalizedCompactionObservation(entry.data);
+      if (observation) compactionObservations.push(observation);
+    }
     const extracted = usageFromEntry(entry);
     if (!extracted) continue;
     const usage = normalizedUsage(extracted.usage);
-    const timestamp = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
     records.push({
       id: typeof entry.id === "string" && entry.id.length > 0 ? entry.id : null,
       signature,
@@ -151,9 +258,11 @@ export function readUsageArtifact(filePath) {
       timestampMs: Number.isFinite(timestamp) ? timestamp : null,
       sessionId: typeof header?.id === "string" ? header.id : null,
       cwd: typeof header?.cwd === "string" ? header.cwd : null,
+      attributionConfidence: extracted.attributionConfidence,
+      fromHook: extracted.fromHook,
     });
   }
-  return { readable: true, header, entryIds, entrySignatures, records, parseErrors };
+  return { readable: true, header, entryIds, entrySignatures, entryStates, entryOrder, entryPositions, duplicateEntryIds, records, compactions, contextObservations, compactionObservations, parseErrors };
 }
 
 function usageProject(cwd, codeRoot = CODE_ROOT) {
@@ -188,6 +297,19 @@ function outputUsageCost(totals) {
     cacheReadUsd: roundMetric(totals.cost.cacheRead),
     cacheWriteUsd: roundMetric(totals.cost.cacheWrite),
     totalUsd: roundMetric(totals.cost.total),
+  };
+}
+
+function effectiveUsdPerMillion(cost, tokens) {
+  return tokens > 0 ? roundMetric(cost / tokens * 1_000_000) : null;
+}
+
+function effectiveCostPerMillion(totals) {
+  return {
+    inputUsd: effectiveUsdPerMillion(totals.cost.input, totals.input),
+    outputUsd: effectiveUsdPerMillion(totals.cost.output, totals.output),
+    cacheUsd: effectiveUsdPerMillion(totals.cost.cacheRead + totals.cost.cacheWrite, totals.cacheRead + totals.cacheWrite),
+    totalUsd: effectiveUsdPerMillion(totals.cost.total, totals.totalTokens),
   };
 }
 
@@ -229,7 +351,80 @@ function localStartOfDay(nowMs, daysAgo = 0) {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo).getTime();
 }
 
-function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, codeRoot = CODE_ROOT) {
+function nearestRankP95(values) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const rank = Math.ceil(0.95 * sorted.length);
+  return sorted[Math.max(0, rank - 1)];
+}
+
+function averageRounded(values) {
+  return values.length === 0 ? null : Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function contextAnalytics(records, contextCompactions, startMs, endMs) {
+  const assistants = records.filter((record) => record.kind === "assistant"
+    && record.timestampMs !== null
+    && (startMs === null || record.timestampMs >= startMs)
+    && (endMs === null || record.timestampMs <= endMs)
+    && record.usage);
+  const requestValues = assistants.map((record) => record.usage.totalTokens).filter((value) => Number.isSafeInteger(value) && value >= 0);
+  const runtimeRows = assistants.filter((record) => Number.isSafeInteger(record.runtimeContextTokens) && record.runtimeContextTokens >= 0);
+  const runtimeValues = runtimeRows.map((record) => record.runtimeContextTokens);
+  const policyRows = assistants.filter((record) => Number.isSafeInteger(record.contextWindowTokens)
+    && record.contextWindowTokens >= 0
+    && Number.isSafeInteger(record.compactionReserveTokens)
+    && record.compactionReserveTokens >= 0
+    && record.compactionReserveTokens <= record.contextWindowTokens);
+  const policyTuples = new Set(policyRows.map((record) => `${record.contextWindowTokens}\u0000${record.compactionReserveTokens}`));
+  const policyMode = assistants.length === 0 || policyRows.length === 0
+    ? "UNKNOWN"
+    : policyTuples.size > 1
+      ? "MIXED"
+      : policyRows.length < assistants.length ? "PARTIAL" : "KNOWN";
+  const tuple = policyTuples.size === 1 ? [...policyTuples][0].split("\u0000").map(Number) : null;
+  const contextWindowTokens = tuple?.[0] ?? null;
+  const compactionReserveTokens = tuple?.[1] ?? null;
+  const compactionThresholdTokens = tuple ? tuple[0] - tuple[1] : null;
+  let runtimeOver80PercentCeiling = 0;
+  let runtimeAboveCompactionThreshold = 0;
+  for (const record of runtimeRows) {
+    if (Number.isSafeInteger(record.contextWindowTokens) && record.contextWindowTokens >= 0 && record.runtimeContextTokens > 0.8 * record.contextWindowTokens) runtimeOver80PercentCeiling += 1;
+    if (Number.isSafeInteger(record.contextWindowTokens) && record.contextWindowTokens >= 0
+      && Number.isSafeInteger(record.compactionReserveTokens) && record.compactionReserveTokens >= 0
+      && record.compactionReserveTokens <= record.contextWindowTokens
+      && record.runtimeContextTokens > record.contextWindowTokens - record.compactionReserveTokens) runtimeAboveCompactionThreshold += 1;
+  }
+  const gpt56InputFootprintOver272K = assistants.filter((record) => /^gpt-5\.6-/i.test(record.model ?? "")
+    && record.usage.input + record.usage.cacheRead + record.usage.cacheWrite > 272_000).length;
+  const selectedCompactions = (contextCompactions ?? []).filter((compaction) => compaction.timestampMs !== null
+    && (startMs === null || compaction.timestampMs >= startMs)
+    && (endMs === null || compaction.timestampMs <= endMs));
+  const compactionsByReason = { manual: 0, threshold: 0, overflow: 0, unknown: 0 };
+  for (const compaction of selectedCompactions) compactionsByReason[COMPACTION_REASONS.has(compaction.reason) ? compaction.reason : "unknown"] += 1;
+  return {
+    assistantObservations: assistants.length,
+    runtimeContextObservations: runtimeRows.length,
+    knownPolicyObservations: policyRows.length,
+    peakRequestContextTokens: requestValues.length ? Math.max(...requestValues) : null,
+    p95RequestContextTokens: nearestRankP95(requestValues),
+    averageRequestContextTokens: averageRounded(requestValues),
+    peakRuntimeContextTokens: runtimeValues.length ? Math.max(...runtimeValues) : null,
+    p95RuntimeContextTokens: nearestRankP95(runtimeValues),
+    averageRuntimeContextTokens: averageRounded(runtimeValues),
+    gpt56InputFootprintOver272K,
+    runtimeOver80PercentCeiling,
+    runtimeAboveCompactionThreshold,
+    actualCompactions: selectedCompactions.length,
+    compactionsByReason,
+    policyMode,
+    contextWindowTokens,
+    compactionReserveTokens,
+    compactionThresholdTokens,
+  };
+}
+
+function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, codeRoot = CODE_ROOT, contextCompactions = []) {
   const totals = usageTotals();
   const sessions = new Set();
   const models = new Map();
@@ -237,7 +432,9 @@ function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, co
   let earliest = null;
   let latest = null;
   let unknownModelRecords = 0;
+  let deterministicallyRecoveredRecords = 0;
   let unattributedProjectRecords = 0;
+  const unattributedByKind = new Map();
   for (const record of records) {
     if (record.timestampMs === null || (startMs !== null && record.timestampMs < startMs) || (endMs !== null && record.timestampMs > endMs)) continue;
     if (!record.usage) continue;
@@ -249,9 +446,16 @@ function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, co
     const provider = safeUsageLabel(record.provider, "UNATTRIBUTED");
     const model = safeUsageLabel(record.model, "UNATTRIBUTED");
     const modelKey = `${provider}\u0000${model}`;
-    if (model === "UNATTRIBUTED") unknownModelRecords += 1;
-    const modelBucket = models.get(modelKey) ?? { provider, model, recordCount: 0, totals: usageTotals() };
+    if (provider === "UNATTRIBUTED" || model === "UNATTRIBUTED") {
+      unknownModelRecords += 1;
+      if (USAGE_RECORD_KINDS.includes(record.kind)) {
+        unattributedByKind.set(record.kind, (unattributedByKind.get(record.kind) ?? 0) + 1);
+      }
+    }
+    if (record.attributionConfidence === "DETERMINISTIC") deterministicallyRecoveredRecords += 1;
+    const modelBucket = models.get(modelKey) ?? { provider, model, recordCount: 0, totals: usageTotals(), recordKinds: new Map() };
     modelBucket.recordCount += 1;
+    if (USAGE_RECORD_KINDS.includes(record.kind)) modelBucket.recordKinds.set(record.kind, (modelBucket.recordKinds.get(record.kind) ?? 0) + 1);
     addUsageTotals(modelBucket.totals, record.usage);
     models.set(modelKey, modelBucket);
     const project = record.project ?? usageProject(record.cwd, codeRoot);
@@ -261,37 +465,44 @@ function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, co
     addUsageTotals(projectBucket.totals, record.usage);
     projects.set(project, projectBucket);
   }
-  const rows = (map) => [...map.values()].sort((left, right) => right.totals.totalTokens - left.totals.totalTokens);
+  const rows = (map) => [...map.values()].sort((left, right) => right.totals.totalTokens - left.totals.totalTokens || `${left.provider}\u0000${left.model}`.localeCompare(`${right.provider}\u0000${right.model}`));
+  const outputKinds = (kinds) => USAGE_RECORD_KINDS.filter((kind) => kinds.get(kind)).map((kind) => ({ kind, recordCount: kinds.get(kind) }));
+  const outputUnknownKinds = () => USAGE_RECORD_KINDS.filter((kind) => unattributedByKind.get(kind)).map((kind) => ({ kind, recordCount: unattributedByKind.get(kind) }));
   return {
     recordCount: records.filter((record) => record.timestampMs !== null && (startMs === null || record.timestampMs >= startMs) && (endMs === null || record.timestampMs <= endMs) && record.usage).length,
     sessionCount: sessions.size,
     dateRange: { start: earliest === null ? null : new Date(earliest).toISOString(), end: latest === null ? null : new Date(latest).toISOString() },
     tokens: outputUsageTotals(totals),
     cost: outputUsageCost(totals),
-    byModel: rows(models).map((row) => ({ provider: row.provider, model: row.model, recordCount: row.recordCount, tokens: outputUsageTotals(row.totals), cost: outputUsageCost(row.totals) })),
+    byModel: rows(models).map((row) => ({ provider: row.provider, model: row.model, recordCount: row.recordCount, recordKinds: outputKinds(row.recordKinds), tokens: outputUsageTotals(row.totals), cost: outputUsageCost(row.totals), effectiveCostPerMillion: effectiveCostPerMillion(row.totals) })),
+    deterministicallyRecoveredRecords,
+    unattributedByKind: outputUnknownKinds(),
     byProject: rows(projects).map((row) => ({ project: row.project, recordCount: row.recordCount, tokens: outputUsageTotals(row.totals), cost: outputUsageCost(row.totals) })),
     reasoningRecords: totals.reasoningRecords,
     costRecords: totals.costRecords,
     unknownModelRecords,
     unattributedProjectRecords,
+    context: contextAnalytics(records, contextCompactions, startMs, endMs),
   };
 }
 
 export function summarizeUsageRecords(records, options = {}) {
   const nowMs = options.nowMs ?? Date.now();
   const codeRoot = options.codeRoot ?? CODE_ROOT;
-  const all = aggregateUsageRecords(records, nowMs, null, nowMs, codeRoot);
+  const contextCompactions = options.contextCompactions ?? [];
+  const all = aggregateUsageRecords(records, nowMs, null, nowMs, codeRoot, contextCompactions);
   const windows = {
-    today: aggregateUsageRecords(records, nowMs, localStartOfDay(nowMs), nowMs, codeRoot),
-    last7: aggregateUsageRecords(records, nowMs, localStartOfDay(nowMs, USAGE_WINDOW_DAYS.last7 - 1), nowMs, codeRoot),
-    last30: aggregateUsageRecords(records, nowMs, localStartOfDay(nowMs, USAGE_WINDOW_DAYS.last30 - 1), nowMs, codeRoot),
+    today: aggregateUsageRecords(records, nowMs, localStartOfDay(nowMs), nowMs, codeRoot, contextCompactions),
+    last7: aggregateUsageRecords(records, nowMs, localStartOfDay(nowMs, USAGE_WINDOW_DAYS.last7 - 1), nowMs, codeRoot, contextCompactions),
+    last30: aggregateUsageRecords(records, nowMs, localStartOfDay(nowMs, USAGE_WINDOW_DAYS.last30 - 1), nowMs, codeRoot, contextCompactions),
     all,
   };
   return { nowMs, all, windows };
 }
 
 function legacyArtifacts(sessionRoot, codeRoot) {
-  const files = listSessionFiles(sessionRoot);
+  const scanState = { complete: true };
+  const files = listSessionFiles(sessionRoot, [], scanState);
   const artifacts = [];
   let unreadableFiles = 0;
   let parseErrors = 0;
@@ -303,10 +514,69 @@ function legacyArtifacts(sessionRoot, codeRoot) {
     malformedUsageRecords += artifact.records.filter((record) => record.usage === null).length;
     artifacts.push({ filePath: path.resolve(filePath), ...artifact });
   }
-  return { files, artifacts, unreadableFiles, parseErrors, malformedUsageRecords, codeRoot };
+  return { files, artifacts, unreadableFiles, parseErrors, malformedUsageRecords, codeRoot, scanComplete: scanState.complete };
 }
 
-function selectRecords(artifacts) {
+function artifactState(artifact, id) {
+  if (artifact.entryStates instanceof Map) return artifact.entryStates.get(id) ?? null;
+  return artifact.entryStates?.[id] ?? null;
+}
+
+function artifactHasDuplicateEntry(artifact, id) {
+  if (artifact.duplicateEntryIds instanceof Set) return artifact.duplicateEntryIds.has(id);
+  return (artifact.duplicateEntryKeys ?? []).includes(id);
+}
+
+function artifactEntryPosition(artifact, id) {
+  if (artifact.entryPositions instanceof Map) return artifact.entryPositions.get(id) ?? null;
+  const position = artifact.entryPositions?.[id];
+  return Number.isInteger(position) ? position : null;
+}
+
+function stateParentId(state) {
+  return state.parentId ?? state.parentIdKey ?? null;
+}
+
+function collectEffectiveModelPath(artifact, targetId) {
+  const localStates = [];
+  const seenEntryIds = new Set();
+  let currentId = targetId;
+  while (currentId) {
+    if (seenEntryIds.has(currentId) || artifactHasDuplicateEntry(artifact, currentId)) return null;
+    seenEntryIds.add(currentId);
+    const state = artifactState(artifact, currentId);
+    if (!state) return null;
+    localStates.push(state);
+    const parentId = stateParentId(state);
+    if (parentId) {
+      const childPosition = artifactEntryPosition(artifact, currentId);
+      const parentPosition = artifactEntryPosition(artifact, parentId);
+      if (childPosition === null || parentPosition === null || parentPosition >= childPosition) return null;
+    }
+    currentId = parentId;
+  }
+  return localStates.reverse();
+}
+
+function deterministicCompactionModel(record, artifact) {
+  if (record.kind !== "compaction" || (record.fromHook !== undefined && record.fromHook !== false)) return null;
+  const states = collectEffectiveModelPath(artifact, record.id ?? record.idKey);
+  if (!states) return null;
+  let effective = null;
+  for (const state of states) {
+    if (state.modelState === null || state.modelState === undefined) continue;
+    if (!validString(state.modelState.provider) || !validString(state.modelState.model)) return null;
+    effective = { provider: state.modelState.provider.trim(), model: state.modelState.model.trim() };
+  }
+  return effective;
+}
+
+function attributeRecord(record, artifact) {
+  const model = deterministicCompactionModel(record, artifact);
+  return model ? { ...record, provider: model.provider, model: model.model, attributionConfidence: "DETERMINISTIC" } : record;
+}
+
+function selectRecords(artifacts, codeRoot = CODE_ROOT) {
   const artifactByPath = new Map(artifacts.map((artifact) => [artifact.filePath, artifact]));
   const ancestorIds = new Map();
   function idsFromAncestors(artifact, visiting = new Set()) {
@@ -323,12 +593,21 @@ function selectRecords(artifacts) {
     return signatures;
   }
   const selectedRecords = [];
+  const contextObservations = [];
+  const compactionObservations = [];
+  const contextCompactions = [];
   let rawUsageRecords = 0;
   let duplicateRecordsSuppressed = 0;
   let ambiguousRecordsExcluded = 0;
   let invalidTimestampRecords = 0;
   for (const artifact of artifacts) {
     const inheritedSignatures = idsFromAncestors(artifact);
+    const contextByEntry = new Map();
+    for (const observation of artifact.contextObservations ?? []) {
+      contextObservations.push({ ...observation, sourcePath: artifact.filePath });
+      if (!contextByEntry.has(observation.assistantEntryKeyHash)) contextByEntry.set(observation.assistantEntryKeyHash, observation);
+    }
+    for (const observation of artifact.compactionObservations ?? []) compactionObservations.push({ ...observation, sourcePath: artifact.filePath });
     for (const record of artifact.records) {
       rawUsageRecords += 1;
       if (!record.id || record.timestampMs === null || !record.usage) {
@@ -337,14 +616,43 @@ function selectRecords(artifacts) {
         continue;
       }
       if (record.signature && inheritedSignatures.get(record.id) === record.signature) { duplicateRecordsSuppressed += 1; continue; }
-      selectedRecords.push(record);
+      const attributed = attributeRecord(record, artifact);
+      const observation = contextByEntry.get(safeEntryKey(record.id));
+      selectedRecords.push({
+        ...attributed,
+        project: usageProject(record.cwd, codeRoot),
+        sourcePath: artifact.filePath,
+        runtimeContextTokens: observation?.runtimeContextTokens ?? null,
+        contextWindowTokens: observation?.contextWindowTokens ?? null,
+        compactionReserveTokens: observation?.compactionReserveTokens ?? null,
+      });
+    }
+    for (const compaction of artifact.compactions ?? []) {
+      if (!compaction.id || !compaction.signature || inheritedSignatures.get(compaction.id) === compaction.signature || artifactHasDuplicateEntry(artifact, compaction.id)) continue;
+      const observations = (artifact.compactionObservations ?? []).filter((candidate) => candidate.compactionEntryKeyHash === safeEntryKey(compaction.id));
+      const observation = observations[0] ?? null;
+      const attributed = attributeRecord({ kind: "compaction", id: compaction.id, fromHook: compaction.fromHook, provider: null, model: null }, artifact);
+      contextCompactions.push({
+        compactionEntryKeyHash: safeEntryKey(compaction.id),
+        timestampMs: compaction.timestampMs,
+        tokensBefore: compaction.tokensBefore,
+        provider: attributed.provider ?? observation?.provider ?? null,
+        model: attributed.model ?? observation?.model ?? null,
+        project: usageProject(artifact.header?.cwd, codeRoot),
+        reason: observation?.reason ?? null,
+        contextWindowTokens: observation?.contextWindowTokens ?? null,
+        compactionReserveTokens: observation?.compactionReserveTokens ?? null,
+        sourcePath: artifact.filePath,
+        sessionId: typeof artifact.header?.id === "string" ? artifact.header.id : null,
+        observations,
+      });
     }
   }
-  return { selectedRecords, rawUsageRecords, duplicateRecordsSuppressed, ambiguousRecordsExcluded, invalidTimestampRecords };
+  return { selectedRecords, contextObservations, compactionObservations, contextCompactions, rawUsageRecords, duplicateRecordsSuppressed, ambiguousRecordsExcluded, invalidTimestampRecords };
 }
 
-function usageResultFromRecords(records, metadata, selectedWindow, options = {}) {
-  const summary = summarizeUsageRecords(records, { nowMs: options.nowMs, codeRoot: options.codeRoot });
+export function usageResultFromRecords(records, metadata, selectedWindow, options = {}) {
+  const summary = summarizeUsageRecords(records, { nowMs: options.nowMs, codeRoot: options.codeRoot, contextCompactions: options.contextCompactions });
   const selected = summary.windows[selectedWindow] ?? summary.all;
   const costAvailable = selected.recordCount > 0 && selected.costRecords === selected.recordCount;
   const reasoningAvailable = selected.recordCount > 0 && selected.reasoningRecords > 0;
@@ -394,7 +702,9 @@ function usageResultFromRecords(records, metadata, selectedWindow, options = {})
     modelAttribution: {
       status: "SUPPORTED_SCOPED",
       unknownRecords: selected.unknownModelRecords,
-      note: "Assistant records use their stored provider/model metadata; tool and summary usage remains UNATTRIBUTED rather than guessed.",
+      deterministicallyRecoveredRecords: selected.deterministicallyRecoveredRecords,
+      unattributedByKind: selected.unattributedByKind,
+      note: "Assistant records use direct persisted provider/model metadata; eligible standard compactions use deterministic persisted effective-model state; toolResult and branch_summary usage remains UNATTRIBUTED rather than guessed.",
     },
     projectAttribution: {
       status: "SUPPORTED_SCOPED",
@@ -420,11 +730,44 @@ function usageResultFromRecords(records, metadata, selectedWindow, options = {})
   };
 }
 
-export function collectLegacyUsage(selectedWindow = "all", options = {}) {
+export function discoverUsageSources(options = {}) {
+  const sessionRoot = path.resolve(options.sessionRoot ?? SESSION_ROOT);
+  const codeRoot = path.resolve(options.codeRoot ?? CODE_ROOT);
+  const scanState = { complete: true };
+  const files = listSessionFiles(sessionRoot, [], scanState);
+  const sources = [];
+  for (const filePath of files) {
+    try {
+      const absolute = path.resolve(filePath);
+      const stat = fs.lstatSync(absolute, { bigint: true });
+      if (stat.isSymbolicLink() || !stat.isFile()) continue;
+      sources.push({
+        filePath: absolute,
+        pathKey: safePathKey(absolute, sessionRoot),
+        size: Number(stat.size),
+        mtimeNs: stat.mtimeNs.toString(),
+      });
+    } catch {
+      scanState.complete = false;
+    }
+  }
+  return { sessionRoot, codeRoot, files, sources, scanComplete: scanState.complete };
+}
+
+export function selectUsageRecords(artifacts, codeRoot = CODE_ROOT) {
+  return selectRecords(artifacts, codeRoot);
+}
+
+export function collectUsageEvidence(options = {}) {
   const sessionRoot = path.resolve(options.sessionRoot ?? SESSION_ROOT);
   const codeRoot = path.resolve(options.codeRoot ?? CODE_ROOT);
   const collected = legacyArtifacts(sessionRoot, codeRoot);
-  const selection = selectRecords(collected.artifacts);
+  const selection = selectRecords(collected.artifacts, codeRoot);
+  return { sessionRoot, codeRoot, collected, selection };
+}
+
+export function collectLegacyUsage(selectedWindow = "all", options = {}) {
+  const { sessionRoot, codeRoot, collected, selection } = collectUsageEvidence(options);
   const usage = usageResultFromRecords(selection.selectedRecords, {
     sessionFilesDiscovered: collected.files.length,
     sessionFilesScanned: collected.artifacts.length,
@@ -435,7 +778,7 @@ export function collectLegacyUsage(selectedWindow = "all", options = {}) {
     duplicateRecordsSuppressed: selection.duplicateRecordsSuppressed,
     ambiguousRecordsExcluded: selection.ambiguousRecordsExcluded,
     invalidTimestampRecords: selection.invalidTimestampRecords,
-  }, selectedWindow, { nowMs: options.nowMs, codeRoot });
+  }, selectedWindow, { nowMs: options.nowMs, codeRoot, contextCompactions: selection.contextCompactions });
   usage.generatedAt = new Date().toISOString();
   usage.performance = {
     sourceFilesScanned: collected.artifacts.length,
@@ -550,6 +893,20 @@ function safeArtifact(filePath, rawArtifact, source, sessionRoot, codeRoot) {
     const idKey = safeEntryKey(id);
     if (idKey) entrySignatures[idKey] = safeSignatureKey(signature);
   }
+  const entryStates = {};
+  for (const [id, state] of rawArtifact.entryStates) {
+    const idKey = safeEntryKey(id);
+    if (!idKey) continue;
+    entryStates[idKey] = {
+      type: state.type,
+      parentIdKey: safeEntryKey(state.parentId),
+      role: state.role,
+      modelState: state.modelState ? {
+        provider: safeUsageLabel(state.modelState.provider, null),
+        model: safeUsageLabel(state.modelState.model, null),
+      } : null,
+    };
+  }
   const records = rawArtifact.records.map((record) => ({
     idKey: safeEntryKey(record.id),
     signatureKey: safeSignatureKey(record.signature),
@@ -558,15 +915,35 @@ function safeArtifact(filePath, rawArtifact, source, sessionRoot, codeRoot) {
     provider: record.provider,
     model: record.model,
     timestampMs: record.timestampMs,
+    attributionConfidence: record.attributionConfidence,
+    fromHook: record.fromHook,
     sessionKey,
     project: usageProject(record.cwd, codeRoot),
   }));
+  const contextObservations = (rawArtifact.contextObservations ?? []).map((observation) => ({ ...observation }));
+  const compactionObservations = (rawArtifact.compactionObservations ?? []).map((observation) => ({ ...observation }));
+  const compactions = (rawArtifact.compactions ?? []).map((compaction) => ({
+    entryKeyHash: safeEntryKey(compaction.id),
+    signatureKey: safeSignatureKey(compaction.signature),
+    timestampMs: compaction.timestampMs,
+    tokensBefore: compaction.tokensBefore,
+    fromHook: compaction.fromHook,
+  })).filter((compaction) => compaction.entryKeyHash && compaction.signatureKey && Number.isFinite(compaction.timestampMs));
   return {
     fileKey: source.fileKey,
     sessionKey,
+    project: usageProject(header?.cwd, codeRoot),
     parentFileKey,
     entrySignatures,
+    entryStates,
+    entryOrder: rawArtifact.entryOrder.map(safeEntryKey).filter(Boolean),
+    entryPositions: Object.fromEntries([...rawArtifact.entryPositions].filter(([key, value]) => safeEntryKey(key) && Number.isInteger(value)).map(([key, value]) => [safeEntryKey(key), value])),
+    attributionMetadataVersion: 2,
+    duplicateEntryKeys: [...rawArtifact.duplicateEntryIds].map(safeEntryKey).filter(Boolean),
     records,
+    contextObservations,
+    compactionObservations,
+    compactions,
     readable: rawArtifact.readable,
     parseErrors: rawArtifact.parseErrors,
     malformedUsageRecords: rawArtifact.records.filter((record) => record.usage === null).length,
@@ -576,7 +953,18 @@ function safeArtifact(filePath, rawArtifact, source, sessionRoot, codeRoot) {
 
 function deserializeArtifact(json) {
   const artifact = JSON.parse(json);
-  return { ...artifact, entrySignatures: artifact.entrySignatures ?? {} };
+  return {
+    ...artifact,
+    entrySignatures: artifact.entrySignatures ?? {},
+    entryStates: artifact.entryStates ?? {},
+    entryOrder: artifact.entryOrder ?? [],
+    entryPositions: artifact.entryPositions ?? {},
+    attributionMetadataVersion: artifact.attributionMetadataVersion ?? 0,
+    duplicateEntryKeys: artifact.duplicateEntryKeys ?? [],
+    contextObservations: artifact.contextObservations ?? [],
+    compactionObservations: artifact.compactionObservations ?? [],
+    compactions: artifact.compactions ?? [],
+  };
 }
 
 function serializeArtifact(artifact) {
@@ -705,6 +1093,7 @@ function indexedSelectRecords(artifacts) {
     return result;
   }
   const records = [];
+  const contextCompactions = [];
   let rawUsageRecords = 0;
   let duplicateRecordsSuppressed = 0;
   let ambiguousRecordsExcluded = 0;
@@ -717,6 +1106,7 @@ function indexedSelectRecords(artifacts) {
     parseErrors += artifact.parseErrors;
     malformedUsageRecords += artifact.malformedUsageRecords;
     const inheritedSignatures = getInheritedSignatures(artifact);
+    const contextByEntry = new Map((artifact.contextObservations ?? []).map((observation) => [observation.assistantEntryKeyHash, observation]));
     for (const record of artifact.records) {
       rawUsageRecords += 1;
       if (!record.idKey || record.timestampMs === null || !record.usage) {
@@ -728,10 +1118,34 @@ function indexedSelectRecords(artifacts) {
         duplicateRecordsSuppressed += 1;
         continue;
       }
-      records.push(record);
+      const observation = contextByEntry.get(record.idKey);
+      records.push({
+        ...attributeRecord(record, artifact),
+        runtimeContextTokens: observation?.runtimeContextTokens ?? null,
+        contextWindowTokens: observation?.contextWindowTokens ?? null,
+        compactionReserveTokens: observation?.compactionReserveTokens ?? null,
+      });
+    }
+    for (const compaction of artifact.compactions ?? []) {
+      if (!compaction.entryKeyHash || !compaction.signatureKey || inheritedSignatures.get(compaction.entryKeyHash) === compaction.signatureKey || artifact.duplicateEntryKeys.includes(compaction.entryKeyHash)) continue;
+      const observations = (artifact.compactionObservations ?? []).filter((candidate) => candidate.compactionEntryKeyHash === compaction.entryKeyHash);
+      const observation = observations[0] ?? null;
+      const attributed = attributeRecord({ kind: "compaction", idKey: compaction.entryKeyHash, fromHook: compaction.fromHook, provider: null, model: null }, artifact);
+      contextCompactions.push({
+        compactionEntryKeyHash: compaction.entryKeyHash,
+        timestampMs: compaction.timestampMs,
+        tokensBefore: compaction.tokensBefore,
+        provider: attributed.provider ?? observation?.provider ?? null,
+        model: attributed.model ?? observation?.model ?? null,
+        project: artifact.project ?? "UNATTRIBUTED",
+        reason: observation?.reason ?? null,
+        contextWindowTokens: observation?.contextWindowTokens ?? null,
+        compactionReserveTokens: observation?.compactionReserveTokens ?? null,
+        observations,
+      });
     }
   }
-  return { records, rawUsageRecords, duplicateRecordsSuppressed, ambiguousRecordsExcluded, invalidTimestampRecords, unreadableFiles, parseErrors, malformedUsageRecords };
+  return { records, contextCompactions, rawUsageRecords, duplicateRecordsSuppressed, ambiguousRecordsExcluded, invalidTimestampRecords, unreadableFiles, parseErrors, malformedUsageRecords };
 }
 
 function localWindowContext(nowMs = Date.now()) {
@@ -772,9 +1186,21 @@ function writeSnapshot(db, generation, context, payload) {
 
 function buildSnapshot(artifacts, metadata, options) {
   const selection = indexedSelectRecords(artifacts);
-  const summary = summarizeUsageRecords(selection.records, { nowMs: options.nowMs, codeRoot: options.codeRoot });
+  const summary = summarizeUsageRecords(selection.records, { nowMs: options.nowMs, codeRoot: options.codeRoot, contextCompactions: selection.contextCompactions });
   return {
     windows: summary.windows,
+    contextCompactions: selection.contextCompactions.map((compaction) => ({
+      compactionEntryKeyHash: compaction.compactionEntryKeyHash,
+      timestampMs: compaction.timestampMs,
+      tokensBefore: compaction.tokensBefore,
+      provider: compaction.provider,
+      model: compaction.model,
+      project: compaction.project,
+      reason: compaction.reason ?? null,
+      contextWindowTokens: compaction.contextWindowTokens ?? null,
+      compactionReserveTokens: compaction.compactionReserveTokens ?? null,
+      observations: compaction.observations ?? [],
+    })),
     scope: {
       classification: "LOCAL_EVIDENCE_ONLY",
       sessionFilesDiscovered: metadata.sessionFilesDiscovered,
@@ -824,7 +1250,9 @@ function indexedMetadataPayload(snapshot, selectedWindow, performanceMetadata, o
   usage.modelAttribution = {
     status: "SUPPORTED_SCOPED",
     unknownRecords: selectedBucket.unknownModelRecords,
-    note: "Assistant records use their stored provider/model metadata; tool and summary usage remains UNATTRIBUTED rather than guessed.",
+    deterministicallyRecoveredRecords: selectedBucket.deterministicallyRecoveredRecords,
+    unattributedByKind: selectedBucket.unattributedByKind,
+    note: "Assistant records use direct persisted provider/model metadata; eligible standard compactions use deterministic persisted effective-model state; toolResult and branch_summary usage remains UNATTRIBUTED rather than guessed.",
   };
   usage.projectAttribution = {
     status: "SUPPORTED_SCOPED",
@@ -845,7 +1273,7 @@ function fallback(selectedWindow, options, reason) {
   return collectLegacyUsage(selectedWindow, { ...options, fallbackReason: reason });
 }
 
-export function collectIndexedUsage(selectedWindow = "all", options = {}) {
+function collectDerivedUsage(selectedWindow = "all", options = {}) {
   if (options.forceLegacy) return fallback(selectedWindow, options, "FORCED_LEGACY_TEST_PATH");
   if (!sqliteAvailable()) return fallback(selectedWindow, options, "SQLITE_UNSUPPORTED");
   const sessionRoot = path.resolve(options.sessionRoot ?? SESSION_ROOT);
@@ -866,7 +1294,8 @@ export function collectIndexedUsage(selectedWindow = "all", options = {}) {
       }
     }
     const current = currentSources(sessionRoot, codeRoot);
-    const stored = readStoredSources(db);
+    const stored = readStoredSources(db, true);
+    const attributionMetadataMissing = [...stored.values()].some(({ artifact }) => artifact?.readable && artifact.attributionMetadataVersion !== 2);
     const changed = [];
     let removed = 0;
     for (const source of current.sources.values()) {
@@ -876,9 +1305,14 @@ export function collectIndexedUsage(selectedWindow = "all", options = {}) {
     for (const fileKey of stored.keys()) {
       if (!current.sources.has(fileKey)) removed += 1;
     }
+    if (attributionMetadataMissing) {
+      for (const source of current.sources.values()) {
+        if (!changed.some((candidate) => candidate.fileKey === source.fileKey)) changed.push(source);
+      }
+    }
     const meta = metadataMap(db);
     let generation = Number(meta.get("sourceGeneration") ?? 0);
-    const sourceChanged = changed.length > 0 || removed > 0 || stored.size !== current.sources.size;
+    const sourceChanged = changed.length > 0 || removed > 0 || stored.size !== current.sources.size || attributionMetadataMissing;
     if (sourceChanged) generation += 1;
     const context = localWindowContext(options.nowMs ?? Date.now());
     const snapshot = !sourceChanged ? readStoredSnapshot(db, generation, context) : null;
@@ -910,7 +1344,7 @@ export function collectIndexedUsage(selectedWindow = "all", options = {}) {
     for (const fileKey of stored.keys()) if (!current.sources.has(fileKey)) working.delete(fileKey);
     const allArtifacts = allStoredArtifacts(working);
     const metadata = { sessionFilesDiscovered: current.files.length };
-    const nextSnapshot = buildSnapshot(allArtifacts, metadata, { nowMs: options.nowMs, codeRoot });
+      const nextSnapshot = buildSnapshot(allArtifacts, metadata, { nowMs: options.nowMs, codeRoot });
     db.exec("BEGIN IMMEDIATE");
     try {
       for (const source of reindexed) writeSourceRow(db, source, working.get(source.fileKey).artifact, generation);
@@ -934,7 +1368,7 @@ export function collectIndexedUsage(selectedWindow = "all", options = {}) {
       sourceFilesRemoved: removed,
       sourceBytesReindexed: reindexed.reduce((total, source) => total + source.size, 0),
       databaseSizeBytes: databaseSize(location.databasePath),
-      rebuildReason: stored.size === 0 ? "INITIAL_BUILD" : (sourceChanged ? "SOURCE_CHANGE" : "WINDOW_CONTEXT_CHANGE"),
+      rebuildReason: stored.size === 0 ? "INITIAL_BUILD" : (attributionMetadataMissing ? "ATTRIBUTION_METADATA_REBUILD" : (sourceChanged ? "SOURCE_CHANGE" : "WINDOW_CONTEXT_CHANGE")),
     };
     return indexedMetadataPayload(nextSnapshot, selectedWindow, performanceMetadata, { nowMs: options.nowMs, codeRoot });
   } catch (error) {
@@ -945,12 +1379,29 @@ export function collectIndexedUsage(selectedWindow = "all", options = {}) {
   }
 }
 
+export function collectIndexedUsage(selectedWindow = "all", options = {}) {
+  if (!options.indexDirectory && !options.forceLegacy) {
+    const durable = collectDurableUsage(selectedWindow, options);
+    if (durable) return durable;
+    return collectLegacyUsage(selectedWindow, { ...options, fallbackReason: "DURABLE_HISTORY_NOT_READY" });
+  }
+  return collectDerivedUsage(selectedWindow, options);
+}
+
 export function usageIndexDiagnostics(usage) {
   const performance = usage?.performance;
   if (!performance || performance.indexBackend === "LEGACY_FULL_SCAN") {
     return {
       status: performance?.rebuildReason === "SQLITE_UNSUPPORTED" ? "UNSUPPORTED" : "FALLBACK_LEGACY",
-      explanation: "The authoritative legacy Usage collector was used because the derived SQLite index was unavailable or unsafe.",
+      explanation: "The legacy Usage collector was used because the durable or derived SQLite index was unavailable or not ready.",
+    };
+  }
+  if (performance.persistence === "DURABLE_SQLITE") {
+    return {
+      status: performance.historyState === "READY" ? "PASS" : "WARN",
+      explanation: performance.historyState === "READY"
+        ? "Usage analytics are served from private durable local history derived from Pi JSONL evidence; deleted source JSONL does not remove committed facts."
+        : "Usage analytics remain available from committed durable local history, but new source evidence requires reconciliation.",
     };
   }
   return {

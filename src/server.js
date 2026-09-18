@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 import { collectDiagnostics, collectEvidence } from "./evidence.js";
 import { collectIndexedUsage } from "./usage-index.js";
 import { collectLiveObservability } from "./live-observability.js";
+import { collectCodexQuota, codexQuotaApiResponse } from "./codex-quota.js";
+
+export { codexQuotaApiResponse };
 
 const BIND_ADDRESS = "127.0.0.1";
 const STATIC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
@@ -277,6 +280,7 @@ function usageBucketResponse(bucket) {
     cost: usageCostResponse(bucket.cost),
     byModel: bucket.byModel.map((row) => usageModelResponse(row)),
     byProject: bucket.byProject.map((row) => usageProjectResponse(row)),
+    context: usageContextResponse(bucket.context),
   };
 }
 
@@ -285,8 +289,15 @@ function usageModelResponse(row) {
     provider: row.provider,
     model: row.model,
     recordCount: row.recordCount,
+    recordKinds: row.recordKinds.map((kind) => ({ kind: kind.kind, recordCount: kind.recordCount })),
     tokens: usageTokensResponse(row.tokens),
     cost: usageCostResponse(row.cost),
+    effectiveCostPerMillion: {
+      inputUsd: row.effectiveCostPerMillion.inputUsd,
+      outputUsd: row.effectiveCostPerMillion.outputUsd,
+      cacheUsd: row.effectiveCostPerMillion.cacheUsd,
+      totalUsd: row.effectiveCostPerMillion.totalUsd,
+    },
   };
 }
 
@@ -296,6 +307,35 @@ function usageProjectResponse(row) {
     recordCount: row.recordCount,
     tokens: usageTokensResponse(row.tokens),
     cost: usageCostResponse(row.cost),
+  };
+}
+
+function usageContextResponse(context = {}) {
+  const reasons = context.compactionsByReason ?? {};
+  return {
+    assistantObservations: Number.isInteger(context.assistantObservations) ? context.assistantObservations : 0,
+    runtimeContextObservations: Number.isInteger(context.runtimeContextObservations) ? context.runtimeContextObservations : 0,
+    knownPolicyObservations: Number.isInteger(context.knownPolicyObservations) ? context.knownPolicyObservations : 0,
+    peakRequestContextTokens: context.peakRequestContextTokens ?? null,
+    p95RequestContextTokens: context.p95RequestContextTokens ?? null,
+    averageRequestContextTokens: context.averageRequestContextTokens ?? null,
+    peakRuntimeContextTokens: context.peakRuntimeContextTokens ?? null,
+    p95RuntimeContextTokens: context.p95RuntimeContextTokens ?? null,
+    averageRuntimeContextTokens: context.averageRuntimeContextTokens ?? null,
+    gpt56InputFootprintOver272K: Number.isInteger(context.gpt56InputFootprintOver272K) ? context.gpt56InputFootprintOver272K : 0,
+    runtimeOver80PercentCeiling: Number.isInteger(context.runtimeOver80PercentCeiling) ? context.runtimeOver80PercentCeiling : 0,
+    runtimeAboveCompactionThreshold: Number.isInteger(context.runtimeAboveCompactionThreshold) ? context.runtimeAboveCompactionThreshold : 0,
+    actualCompactions: Number.isInteger(context.actualCompactions) ? context.actualCompactions : 0,
+    compactionsByReason: {
+      manual: Number.isInteger(reasons.manual) ? reasons.manual : 0,
+      threshold: Number.isInteger(reasons.threshold) ? reasons.threshold : 0,
+      overflow: Number.isInteger(reasons.overflow) ? reasons.overflow : 0,
+      unknown: Number.isInteger(reasons.unknown) ? reasons.unknown : 0,
+    },
+    policyMode: ["UNKNOWN", "PARTIAL", "KNOWN", "MIXED"].includes(context.policyMode) ? context.policyMode : "UNKNOWN",
+    contextWindowTokens: context.contextWindowTokens ?? null,
+    compactionReserveTokens: context.compactionReserveTokens ?? null,
+    compactionThresholdTokens: context.compactionThresholdTokens ?? null,
   };
 }
 
@@ -338,6 +378,8 @@ function usageApiResponse(usage) {
     modelAttribution: {
       status: usage.modelAttribution.status,
       unknownRecords: usage.modelAttribution.unknownRecords,
+      deterministicallyRecoveredRecords: usage.modelAttribution.deterministicallyRecoveredRecords,
+      unattributedByKind: usage.modelAttribution.unattributedByKind.map((kind) => ({ kind: kind.kind, recordCount: kind.recordCount })),
       note: usage.modelAttribution.note,
     },
     projectAttribution: {
@@ -361,6 +403,9 @@ function usageApiResponse(usage) {
       persistence: usage.performance.persistence,
       indexBackend: usage.performance.indexBackend,
       indexState: usage.performance.indexState,
+      historyState: usage.performance.historyState ?? null,
+      historyRevision: usage.performance.historyRevision ?? null,
+      reconciliationReason: usage.performance.reconciliationReason ?? null,
       sourceFilesDiscovered: usage.performance.sourceFilesDiscovered,
       sourceFilesReused: usage.performance.sourceFilesReused,
       sourceFilesReindexed: usage.performance.sourceFilesReindexed,
@@ -368,6 +413,14 @@ function usageApiResponse(usage) {
       sourceBytesReindexed: usage.performance.sourceBytesReindexed,
       databaseSizeBytes: usage.performance.databaseSizeBytes,
       rebuildReason: usage.performance.rebuildReason,
+      contextBackfillVersion: usage.performance.contextBackfillVersion ?? null,
+      contextBackfillPerformed: usage.performance.contextBackfillPerformed ?? false,
+      contextFilesParsed: usage.performance.contextFilesParsed ?? 0,
+      contextFilesHashed: usage.performance.contextFilesHashed ?? 0,
+      contextCompactions: usage.performance.contextCompactions ?? 0,
+      contextTelemetryStatus: ["CLEAN", "CONFLICT_SEEN"].includes(usage.performance.contextTelemetryStatus)
+        ? usage.performance.contextTelemetryStatus
+        : "CLEAN",
     },
   };
 }
@@ -399,7 +452,7 @@ export function createServer() {
       sendJson(response, 405, { error: "Method not allowed" });
       return;
     }
-    const apiPaths = new Set(["/api/overview", "/api/observability", "/api/live-observability", "/api/projects", "/api/diagnostics", "/api/mcp", "/api/skills", "/api/usage", "/api/worktrees", "/api/settings"]);
+    const apiPaths = new Set(["/api/overview", "/api/observability", "/api/live-observability", "/api/projects", "/api/diagnostics", "/api/mcp", "/api/skills", "/api/usage", "/api/codex-quota", "/api/worktrees", "/api/settings"]);
     if (apiPaths.has(requestUrl.pathname)) {
       try {
         if (requestUrl.pathname === "/api/live-observability") {
@@ -408,6 +461,10 @@ export function createServer() {
         }
         if (requestUrl.pathname === "/api/usage") {
           sendJson(response, 200, usageApiResponse(collectIndexedUsage(requestUrl.searchParams.get("window") ?? "all")));
+          return;
+        }
+        if (requestUrl.pathname === "/api/codex-quota") {
+          sendJson(response, 200, codexQuotaApiResponse(collectCodexQuota()));
           return;
         }
         const address = response.socket?.localAddress;

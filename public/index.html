@@ -264,9 +264,32 @@
               <article class="card status-card"><div class="card-label">Cache tokens</div><strong id="usage-cache" class="metric">—</strong><p class="muted">read + write</p></article>
               <article class="card status-card"><div class="card-label">Pi-computed cost</div><strong id="usage-cost" class="metric compact">—</strong><p id="usage-cost-detail" class="muted">—</p></article>
             </div>
+            <section class="section-block codex-quota-section" aria-labelledby="codex-quota-title">
+              <div class="section-heading"><div><p class="eyebrow">Subscription rate-limit evidence</p><h2 id="codex-quota-title">Codex quota</h2></div><span id="codex-quota-availability" class="count-badge">UNAVAILABLE</span></div>
+              <div class="notice-card"><strong>Last-observed only</strong><span id="codex-quota-source-note">Quota percentages come only from sanitized Pi Codex response headers; they are not billing or account-complete usage.</span></div>
+              <div class="status-grid codex-quota-summary">
+                <article class="card status-card accent"><div class="card-label">5-hour window</div><strong id="codex-quota-session-remaining" class="metric">Unavailable</strong><p class="muted">Remaining · <span id="codex-quota-session-status">UNAVAILABLE</span></p><p id="codex-quota-session-used" class="muted">Used: unavailable</p><p id="codex-quota-session-reset" class="muted">Resets: unavailable</p></article>
+                <article class="card status-card"><div class="card-label">Weekly window</div><strong id="codex-quota-weekly-remaining" class="metric">Unavailable</strong><p class="muted">Remaining · <span id="codex-quota-weekly-status">UNAVAILABLE</span></p><p id="codex-quota-weekly-used" class="muted">Used: unavailable</p><p id="codex-quota-weekly-reset" class="muted">Resets: unavailable</p></article>
+              </div>
+              <div class="card info-card codex-quota-meta"><div class="info-row"><span class="info-key">Last observed</span><span id="codex-quota-observed" class="info-value">Unavailable</span></div><div class="info-row"><span class="info-key">Source</span><span id="codex-quota-source" class="info-value">Unavailable</span></div><div class="info-row"><span class="info-key">Limitations</span><span id="codex-quota-limitations" class="info-value">Unavailable</span></div></div>
+            </section>
+            <section class="section-block context-observability-section" aria-labelledby="context-observability-title">
+              <div class="section-heading"><div><p class="eyebrow">Runtime and request evidence</p><h2 id="context-observability-title">Context / Request Footprint</h2></div><span id="usage-context-policy" class="count-badge">UNKNOWN</span></div>
+              <div class="notice-card"><strong>Observation-time evidence only</strong><span>Request context uses persisted assistant Usage.totalTokens. Runtime context uses Pi ctx.getContextUsage() when captured. GPT-5.6 input footprint is not billing evidence.</span></div>
+              <div class="status-grid context-summary">
+                <article class="card status-card accent"><div class="card-label">Peak request context</div><strong id="usage-context-peak-request" class="metric">Unavailable</strong><p class="muted">assistant Usage.totalTokens</p></article>
+                <article class="card status-card"><div class="card-label">P95 request context</div><strong id="usage-context-p95-request" class="metric">Unavailable</strong><p class="muted">nearest-rank</p></article>
+                <article class="card status-card"><div class="card-label">Peak runtime context</div><strong id="usage-context-peak-runtime" class="metric">Unavailable</strong><p class="muted">Pi runtime observation</p></article>
+                <article class="card status-card"><div class="card-label">Runtime P95</div><strong id="usage-context-p95-runtime" class="metric">Unavailable</strong><p class="muted">Pi runtime observation</p></article>
+              </div>
+              <div class="two-column context-details">
+                <div class="card info-card"><div class="info-row"><span class="info-key">Context ceiling</span><span id="usage-context-window" class="info-value">Unavailable</span></div><div class="info-row"><span class="info-key">Auto-compaction threshold</span><span id="usage-context-threshold" class="info-value">Unavailable</span></div><div class="info-row"><span class="info-key">Policy coverage</span><span id="usage-context-coverage" class="info-value">0 / 0</span></div><div class="info-row"><span class="info-key">Policy state</span><span id="usage-context-policy-detail" class="info-value">UNKNOWN</span></div></div>
+                <div class="card info-card"><div class="info-row"><span class="info-key">GPT-5.6 input footprint &gt;272K</span><span id="usage-context-272k" class="info-value">0</span></div><div class="info-row"><span class="info-key">Above 80% ceiling</span><span id="usage-context-over80" class="info-value">0</span></div><div class="info-row"><span class="info-key">Above auto-compact threshold</span><span id="usage-context-over-threshold" class="info-value">0</span></div><div class="info-row"><span class="info-key">Actual compactions</span><span id="usage-context-compactions" class="info-value">0</span></div><div class="info-row"><span class="info-key">Compaction reasons</span><span id="usage-context-reasons" class="info-value">manual 0 · threshold 0 · overflow 0 · unknown 0</span></div></div>
+              </div>
+            </section>
             <div class="two-column usage-details">
               <div class="card info-card"><div class="info-row"><span class="info-key">Records / sessions</span><span id="usage-records" class="info-value">—</span></div><div class="info-row"><span class="info-key">Event period</span><span id="usage-date-range" class="info-value">—</span></div><div class="info-row"><span class="info-key">Completeness</span><span id="usage-completeness-value" class="info-value">—</span></div><div class="info-row"><span class="info-key">Source scan</span><span id="usage-source-detail" class="info-value">—</span></div></div>
-              <div class="card info-card"><div class="info-row"><span class="info-key">Model attribution</span><span id="usage-model-detail" class="info-value">—</span></div><div class="info-row"><span class="info-key">Project attribution</span><span id="usage-project-detail" class="info-value">—</span></div><div class="info-row"><span class="info-key">Role attribution</span><span class="info-value">Unsupported</span></div><div class="info-row"><span class="info-key">Persistence</span><span class="info-value">None · on-demand scan</span></div></div>
+              <div class="card info-card"><div class="info-row"><span class="info-key">Model attribution</span><span id="usage-model-detail" class="info-value">—</span></div><div class="info-row"><span class="info-key">Project attribution</span><span id="usage-project-detail" class="info-value">—</span></div><div class="info-row"><span class="info-key">Role attribution</span><span class="info-value">Unsupported</span></div><div class="info-row"><span class="info-key">Persistence</span><span class="info-value">Private rebuildable SQLite index</span></div></div>
             </div>
           </section>
           <section class="section-block">
@@ -275,8 +298,8 @@
           </section>
           <section class="section-block">
             <div class="section-heading"><div><p class="eyebrow">Stored provider metadata</p><h2>By model</h2></div></div>
-            <p class="source-note">Model names come from each stored assistant record. Missing attribution remains UNATTRIBUTED.</p>
-            <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Records</th><th>Total tokens</th><th>Cost (USD)</th></tr></thead><tbody id="usage-models-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table></div></div>
+            <p class="source-note">Assistant/provider attribution remains evidence-based; eligible compactions use deterministic effective-model state and toolResult may remain UNATTRIBUTED. Effective $/1M values are historical rates from persisted Pi Usage.cost and tokens, not current provider list prices; Cache $/1M blends cacheRead and cacheWrite.</p>
+            <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Provider</th><th>Model</th><th>Usage types</th><th>Records</th><th>Input tokens</th><th>Input $/1M</th><th>Output tokens</th><th>Output $/1M</th><th>Cache tokens</th><th>Cache $/1M</th><th>Total tokens</th><th>Total $/1M</th><th>Cost (USD)</th></tr></thead><tbody id="usage-models-body"><tr><td colspan="13" class="empty">Loading…</td></tr></tbody></table></div></div>
           </section>
           <section class="section-block">
             <div class="section-heading"><div><p class="eyebrow">Deterministic cwd mapping</p><h2>By project</h2></div></div>
@@ -284,7 +307,7 @@
             <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Project</th><th>Records</th><th>Total tokens</th><th>Cost (USD)</th></tr></thead><tbody id="usage-projects-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div></div>
           </section>
           <section class="section-block"><div class="section-heading"><div><p class="eyebrow">Evidence limits</p><h2>Completeness and limitations</h2></div></div><div class="notice-card"><strong id="usage-completeness">Local evidence only</strong><span>Account-complete usage, live process usage, and role-level usage are unsupported.</span></div><div class="card evidence-card"><ul id="usage-limitations"><li>Loading…</li></ul></div></section>
-          <footer class="footer">Read-only usage metadata · no billing API, pricing lookup, persistence, transcript viewer, or background collector</footer>
+          <footer class="footer">Read-only usage metadata · no billing API, pricing lookup, transcript viewer, or background collector</footer>
         </div>
 
         <div id="projects-page" class="page hidden">
