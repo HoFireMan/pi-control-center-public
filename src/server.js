@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectDiagnostics, collectEvidence } from "./evidence.js";
-import { collectIndexedUsage } from "./usage-index.js";
+import { collectIndexedUsage, resolveUsageWindow } from "./usage-index.js";
 import { collectLiveObservability } from "./live-observability.js";
 import { collectCodexQuota, codexQuotaApiResponse } from "./codex-quota.js";
 
@@ -364,7 +364,15 @@ function usageApiResponse(usage) {
       label: usage.windowLabels[usage.selectedWindow],
       timezone: "local",
       dateRange: { ...usage.selected.dateRange },
-      note: "Windows are local calendar-day views of usage represented by local evidence; they are not billing periods.",
+      ...(usage.windowDetails ? {
+        startDate: usage.windowDetails.startDate,
+        endDate: usage.windowDetails.endDate,
+        start: usage.windowDetails.start,
+        endExclusive: usage.windowDetails.endExclusive,
+      } : {}),
+      note: usage.windowDetails
+        ? "Explicit local calendar interval; endDate is inclusive in the UI and endExclusive is the next local midnight."
+        : "Windows are local calendar-day views of usage represented by local evidence; they are not billing periods.",
     },
     summary: usageBucketResponse(usage.selected),
     windows: Object.fromEntries(Object.entries(usage.windows).map(([id, bucket]) => [id, usageBucketResponse(bucket)])),
@@ -461,7 +469,20 @@ export function createServer() {
           return;
         }
         if (requestUrl.pathname === "/api/usage") {
-          sendJson(response, 200, usageApiResponse(collectIndexedUsage(requestUrl.searchParams.get("window") ?? "all")));
+          const nowMs = Date.now();
+          try {
+            const usageWindow = resolveUsageWindow(requestUrl.searchParams, { nowMs });
+            sendJson(response, 200, usageApiResponse(collectIndexedUsage(usageWindow.selectedWindow, {
+              nowMs,
+              interval: usageWindow.interval,
+            })));
+          } catch (error) {
+            if (error?.code === "INVALID_USAGE_WINDOW") {
+              sendJson(response, 400, { error: "Invalid usage window", reason: error.reason });
+              return;
+            }
+            throw error;
+          }
           return;
         }
         if (requestUrl.pathname === "/api/codex-quota") {

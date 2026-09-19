@@ -30,8 +30,32 @@ nav { display: grid; gap: 4px; }
 .page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
 .header-actions { display: flex; align-items: center; gap: 12px; }
 .window-control { color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 7px; }
-.window-control select { color: var(--text); background: var(--panel-soft); border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; font: inherit; font-size: 11px; }
+.window-control select, .window-control input { color: var(--text); background: var(--panel-soft); border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; font: inherit; font-size: 11px; height: 31px; }
+.usage-window-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.usage-range-controls { display: flex; align-items: center; gap: 7px; }
+.usage-window-controls .refresh-button { height: 31px; display: inline-flex; align-items: center; }
+#usage-window-error { flex-basis: 100%; }
+.window-error { color: #ff8c8c; font-size: 10px; margin: 0; text-align: right; }
 .refresh-button { border: 1px solid var(--border); background: var(--panel-soft); color: var(--text); border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 11px; cursor: pointer; }
+#usage-page .page-header > div:first-child { flex: 0 1 260px; min-width: 220px; }
+#usage-page .header-actions { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; gap: 6px; }
+#usage-page .usage-window-controls { flex: 1 1 auto; justify-content: flex-end; gap: 4px; }
+#usage-page .usage-range-controls { gap: 4px; }
+#usage-page #usage-window { width: 120px; }
+#usage-page #usage-week { width: 120px; }
+#usage-page #usage-custom-start, #usage-page #usage-custom-end { width: 95px; }
+#usage-page .header-actions > .refresh-button { flex: 0 0 auto; height: 31px; display: inline-flex; align-items: center; }
+#usage-page #usage-refresh-status { padding-bottom: 0; white-space: nowrap; font-size: 10px; }
+#usage-page .header-actions.has-usage-error { align-items: flex-start; }
+#usage-page .header-actions.has-usage-error > #usage-refresh-status,
+#usage-page .header-actions.has-usage-error > .refresh-button { margin-top: 10px; }
+@media (max-width: 1390px) and (min-width: 1101px) {
+  #usage-page .page-header > div:first-child { flex-basis: 230px; }
+}
+@media (max-width: 1100px) {
+  #usage-page .header-actions { flex-wrap: wrap; }
+  #usage-page .usage-window-controls { flex-basis: 100%; }
+}
 .refresh-button:hover { border-color: var(--accent); color: var(--accent); }
 .hidden { display: none !important; }
 h1, h2, h3, p { margin-top: 0; }

@@ -11,6 +11,8 @@ const SESSION_ROOT = path.join(HOME, ".pi", "agent", "sessions");
 const USAGE_TOKEN_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"];
 const USAGE_COST_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "total"];
 const USAGE_WINDOW_DAYS = { last7: 7, last30: 30 };
+const USAGE_PRESET_LABELS = Object.freeze({ all: "All available evidence", today: "Today", last7: "Last 7 days", last30: "Last 30 days" });
+const MAX_CUSTOM_RANGE_DAYS = 366;
 const USAGE_RECORD_KINDS = ["assistant", "toolResult", "compaction", "branch_summary"];
 const CONTEXT_OBSERVATION_TYPE = "pi-control-center-context-observation-v1";
 const COMPACTION_OBSERVATION_TYPE = "pi-control-center-compaction-observation-v1";
@@ -351,6 +353,138 @@ function localStartOfDay(nowMs, daysAgo = 0) {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo).getTime();
 }
 
+function localCalendarDate(year, month, day) {
+  const value = new Date(0);
+  value.setHours(0, 0, 0, 0);
+  value.setFullYear(year, month - 1, day);
+  return value;
+}
+
+function localDateText(value) {
+  return [value.getFullYear(), value.getMonth() + 1, value.getDate()].map((part, index) => index === 0 ? String(part).padStart(4, "0") : String(part).padStart(2, "0")).join("-");
+}
+
+function localDateAfter(value, days) {
+  const result = new Date(value.getTime());
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function invalidUsageWindow(reason) {
+  const error = new Error("Invalid usage window");
+  error.code = "INVALID_USAGE_WINDOW";
+  error.reason = reason;
+  return error;
+}
+
+function parseLocalDate(value, field) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw invalidUsageWindow(`INVALID_${field.toUpperCase()}_DATE`);
+  const [year, month, day] = value.split("-").map(Number);
+  if (year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) throw invalidUsageWindow(`INVALID_${field.toUpperCase()}_DATE`);
+  const result = localCalendarDate(year, month, day);
+  if (result.getFullYear() !== year || result.getMonth() + 1 !== month || result.getDate() !== day) throw invalidUsageWindow(`INVALID_${field.toUpperCase()}_DATE`);
+  return result;
+}
+
+function localToday(nowMs) {
+  const now = new Date(nowMs);
+  return localCalendarDate(now.getFullYear(), now.getMonth() + 1, now.getDate());
+}
+
+function isoWeekStart(year, week) {
+  const januaryFourth = localCalendarDate(year, 1, 4);
+  const day = januaryFourth.getDay() || 7;
+  const result = localDateAfter(januaryFourth, 1 - day + (week - 1) * 7);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function parseIsoWeek(value, nowMs) {
+  if (typeof value !== "string" || !/^\d{4}-W\d{2}$/.test(value)) throw invalidUsageWindow("INVALID_WEEK");
+  const [yearText, weekText] = value.split("-W");
+  const year = Number(yearText);
+  const week = Number(weekText);
+  if (year < 1970 || year > 9999 || week < 1 || week > 53) throw invalidUsageWindow("INVALID_WEEK");
+  const start = isoWeekStart(year, week);
+  if (start.getTime() >= isoWeekStart(year + 1, 1).getTime()) throw invalidUsageWindow("INVALID_WEEK");
+  if (start.getTime() > localToday(nowMs).getTime()) throw invalidUsageWindow("FUTURE_WEEK");
+  const endExclusive = localDateAfter(start, 7);
+  return { year, week, start, endExclusive };
+}
+
+function calendarDayNumber(value) {
+  return Math.floor(Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()) / (24 * 60 * 60 * 1000));
+}
+
+function rangeLabel(start, end, prefix = null) {
+  const sameYear = start.getFullYear() === end.getFullYear();
+  const dateOptions = { month: "short", day: "numeric" };
+  const startLabel = start.toLocaleDateString("en-US", sameYear ? dateOptions : { ...dateOptions, year: "numeric" });
+  const endLabel = end.toLocaleDateString("en-US", { ...dateOptions, year: "numeric" });
+  return `${prefix ? `${prefix} · ` : ""}${startLabel}–${endLabel}`;
+}
+
+export function resolveUsageWindow(query, options = {}) {
+  const get = (key) => typeof query?.get === "function" ? query.get(key) : query?.[key];
+  const selectedWindow = get("window") ?? "all";
+  const nowMs = options.nowMs ?? Date.now();
+  if (Object.hasOwn(USAGE_PRESET_LABELS, selectedWindow)) return { selectedWindow, interval: null };
+  if (selectedWindow === "week") {
+    const parsed = parseIsoWeek(get("week"), nowMs);
+    const endDate = localDateAfter(parsed.endExclusive, -1);
+    return {
+      selectedWindow,
+      interval: {
+        id: selectedWindow,
+        startMs: parsed.start.getTime(),
+        endExclusiveMs: parsed.endExclusive.getTime(),
+        details: {
+          selected: selectedWindow,
+          label: rangeLabel(parsed.start, endDate, `Week ${String(parsed.week).padStart(2, "0")}`),
+          timezone: "local",
+          startDate: localDateText(parsed.start),
+          endDate: localDateText(endDate),
+          start: parsed.start.toISOString(),
+          endExclusive: parsed.endExclusive.toISOString(),
+        },
+      },
+    };
+  }
+  if (selectedWindow === "custom") {
+    const start = parseLocalDate(get("start"), "start");
+    const end = parseLocalDate(get("end"), "end");
+    const today = localToday(nowMs);
+    if (start.getTime() > end.getTime()) throw invalidUsageWindow("END_BEFORE_START");
+    if (end.getTime() > today.getTime()) throw invalidUsageWindow("FUTURE_DATE");
+    if (calendarDayNumber(end) - calendarDayNumber(start) + 1 > MAX_CUSTOM_RANGE_DAYS) throw invalidUsageWindow("RANGE_TOO_LARGE");
+    const endExclusive = localDateAfter(end, 1);
+    return {
+      selectedWindow,
+      interval: {
+        id: selectedWindow,
+        startMs: start.getTime(),
+        endExclusiveMs: endExclusive.getTime(),
+        details: {
+          selected: selectedWindow,
+          label: rangeLabel(start, end),
+          timezone: "local",
+          startDate: localDateText(start),
+          endDate: localDateText(end),
+          start: start.toISOString(),
+          endExclusive: endExclusive.toISOString(),
+        },
+      },
+    };
+  }
+  throw invalidUsageWindow("UNKNOWN_WINDOW");
+}
+
+function inUsageInterval(timestampMs, startMs, endMs, endExclusive = false) {
+  return timestampMs !== null
+    && (startMs === null || timestampMs >= startMs)
+    && (endMs === null || (endExclusive ? timestampMs < endMs : timestampMs <= endMs));
+}
+
 function nearestRankP95(values) {
   if (values.length === 0) return null;
   const sorted = [...values].sort((left, right) => left - right);
@@ -367,11 +501,9 @@ function validInputFootprint(record) {
   return Boolean(usage) && [usage.input, usage.cacheRead, usage.cacheWrite].every((value) => Number.isSafeInteger(value) && value >= 0);
 }
 
-function contextAnalytics(records, contextCompactions, startMs, endMs) {
+function contextAnalytics(records, contextCompactions, startMs, endMs, endExclusive = false) {
   const assistants = records.filter((record) => record.kind === "assistant"
-    && record.timestampMs !== null
-    && (startMs === null || record.timestampMs >= startMs)
-    && (endMs === null || record.timestampMs <= endMs)
+    && inUsageInterval(record.timestampMs, startMs, endMs, endExclusive)
     && record.usage);
   const requestValues = assistants.map((record) => record.usage.totalTokens).filter((value) => Number.isSafeInteger(value) && value >= 0);
   const runtimeRows = assistants.filter((record) => Number.isSafeInteger(record.runtimeContextTokens) && record.runtimeContextTokens >= 0);
@@ -403,9 +535,7 @@ function contextAnalytics(records, contextCompactions, startMs, endMs) {
   const gpt56InputFootprintEligibleRows = assistants.filter((record) => /^gpt-5\.6-/i.test(record.model ?? "") && validInputFootprint(record));
   const gpt56InputFootprintEligible = gpt56InputFootprintEligibleRows.length;
   const gpt56InputFootprintOver272K = gpt56InputFootprintEligibleRows.filter((record) => record.usage.input + record.usage.cacheRead + record.usage.cacheWrite > 272_000).length;
-  const selectedCompactions = (contextCompactions ?? []).filter((compaction) => compaction.timestampMs !== null
-    && (startMs === null || compaction.timestampMs >= startMs)
-    && (endMs === null || compaction.timestampMs <= endMs));
+  const selectedCompactions = (contextCompactions ?? []).filter((compaction) => inUsageInterval(compaction.timestampMs, startMs, endMs, endExclusive));
   const compactionsByReason = { manual: 0, threshold: 0, overflow: 0, unknown: 0 };
   for (const compaction of selectedCompactions) compactionsByReason[COMPACTION_REASONS.has(compaction.reason) ? compaction.reason : "unknown"] += 1;
   return {
@@ -431,7 +561,7 @@ function contextAnalytics(records, contextCompactions, startMs, endMs) {
   };
 }
 
-function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, codeRoot = CODE_ROOT, contextCompactions = []) {
+function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, codeRoot = CODE_ROOT, contextCompactions = [], endExclusive = false) {
   const totals = usageTotals();
   const sessions = new Set();
   const models = new Map();
@@ -443,7 +573,7 @@ function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, co
   let unattributedProjectRecords = 0;
   const unattributedByKind = new Map();
   for (const record of records) {
-    if (record.timestampMs === null || (startMs !== null && record.timestampMs < startMs) || (endMs !== null && record.timestampMs > endMs)) continue;
+    if (!inUsageInterval(record.timestampMs, startMs, endMs, endExclusive)) continue;
     if (!record.usage) continue;
     addUsageTotals(totals, record.usage);
     const sessionKey = record.sessionKey ?? record.sessionId;
@@ -476,7 +606,7 @@ function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, co
   const outputKinds = (kinds) => USAGE_RECORD_KINDS.filter((kind) => kinds.get(kind)).map((kind) => ({ kind, recordCount: kinds.get(kind) }));
   const outputUnknownKinds = () => USAGE_RECORD_KINDS.filter((kind) => unattributedByKind.get(kind)).map((kind) => ({ kind, recordCount: unattributedByKind.get(kind) }));
   return {
-    recordCount: records.filter((record) => record.timestampMs !== null && (startMs === null || record.timestampMs >= startMs) && (endMs === null || record.timestampMs <= endMs) && record.usage).length,
+    recordCount: records.filter((record) => inUsageInterval(record.timestampMs, startMs, endMs, endExclusive) && record.usage).length,
     sessionCount: sessions.size,
     dateRange: { start: earliest === null ? null : new Date(earliest).toISOString(), end: latest === null ? null : new Date(latest).toISOString() },
     tokens: outputUsageTotals(totals),
@@ -489,7 +619,7 @@ function aggregateUsageRecords(records, nowMs, startMs = null, endMs = nowMs, co
     costRecords: totals.costRecords,
     unknownModelRecords,
     unattributedProjectRecords,
-    context: contextAnalytics(records, contextCompactions, startMs, endMs),
+    context: contextAnalytics(records, contextCompactions, startMs, endMs, endExclusive),
   };
 }
 
@@ -504,6 +634,17 @@ export function summarizeUsageRecords(records, options = {}) {
     last30: aggregateUsageRecords(records, nowMs, localStartOfDay(nowMs, USAGE_WINDOW_DAYS.last30 - 1), nowMs, codeRoot, contextCompactions),
     all,
   };
+  if (options.interval) {
+    windows[options.interval.id] = aggregateUsageRecords(
+      records,
+      nowMs,
+      options.interval.startMs,
+      options.interval.endExclusiveMs,
+      codeRoot,
+      contextCompactions,
+      true,
+    );
+  }
   return { nowMs, all, windows };
 }
 
@@ -659,7 +800,7 @@ function selectRecords(artifacts, codeRoot = CODE_ROOT) {
 }
 
 export function usageResultFromRecords(records, metadata, selectedWindow, options = {}) {
-  const summary = summarizeUsageRecords(records, { nowMs: options.nowMs, codeRoot: options.codeRoot, contextCompactions: options.contextCompactions });
+  const summary = summarizeUsageRecords(records, { nowMs: options.nowMs, codeRoot: options.codeRoot, contextCompactions: options.contextCompactions, interval: options.interval });
   const selected = summary.windows[selectedWindow] ?? summary.all;
   const costAvailable = selected.recordCount > 0 && selected.costRecords === selected.recordCount;
   const reasoningAvailable = selected.recordCount > 0 && selected.reasoningRecords > 0;
@@ -667,7 +808,8 @@ export function usageResultFromRecords(records, metadata, selectedWindow, option
   return {
     source: "Pi JSONL session artifacts under ~/.pi/agent/sessions; usage-bearing entries only",
     selectedWindow: summary.windows[selectedWindow] ? selectedWindow : "all",
-    windowLabels: { today: "Today", last7: "Last 7 days", last30: "Last 30 days", all: "All available evidence" },
+    windowLabels: { ...USAGE_PRESET_LABELS, ...(options.interval ? { [options.interval.id]: options.interval.details.label } : {}) },
+    windowDetails: options.interval?.details ?? null,
     windows: Object.fromEntries(Object.entries(summary.windows).map(([id, value]) => [id, value])),
     selected,
     scope: {
@@ -785,7 +927,7 @@ export function collectLegacyUsage(selectedWindow = "all", options = {}) {
     duplicateRecordsSuppressed: selection.duplicateRecordsSuppressed,
     ambiguousRecordsExcluded: selection.ambiguousRecordsExcluded,
     invalidTimestampRecords: selection.invalidTimestampRecords,
-  }, selectedWindow, { nowMs: options.nowMs, codeRoot, contextCompactions: selection.contextCompactions });
+  }, selectedWindow, { nowMs: options.nowMs, codeRoot, contextCompactions: selection.contextCompactions, interval: options.interval });
   usage.generatedAt = new Date().toISOString();
   usage.performance = {
     sourceFilesScanned: collected.artifacts.length,
@@ -1281,6 +1423,7 @@ function fallback(selectedWindow, options, reason) {
 }
 
 function collectDerivedUsage(selectedWindow = "all", options = {}) {
+  if (options.interval) return fallback(selectedWindow, options, "EXPLICIT_INTERVAL_LEGACY_SCAN");
   if (options.forceLegacy) return fallback(selectedWindow, options, "FORCED_LEGACY_TEST_PATH");
   if (!sqliteAvailable()) return fallback(selectedWindow, options, "SQLITE_UNSUPPORTED");
   const sessionRoot = path.resolve(options.sessionRoot ?? SESSION_ROOT);

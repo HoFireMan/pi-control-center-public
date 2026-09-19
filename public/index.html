@@ -253,7 +253,15 @@
         <div id="usage-page" class="page hidden">
           <header class="page-header">
             <div><p class="eyebrow">Read-only usage inspection</p><h1>Usage</h1><p class="muted">Token and scoped cost analytics represented by local Pi session evidence.</p></div>
-            <div class="header-actions"><label class="window-control">Window <select id="usage-window"><option value="all">All available evidence</option><option value="today">Today</option><option value="last7">Last 7 days</option><option value="last30">Last 30 days</option></select></label><div id="usage-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-usage" type="button">Refresh</button></div>
+            <div class="header-actions">
+              <div class="usage-window-controls">
+                <label class="window-control">Window <select id="usage-window"><option value="all">All available evidence</option><option value="today">Today</option><option value="last7">Last 7 days</option><option value="last30">Last 30 days</option><option value="week">Specific week…</option><option value="custom">Custom range…</option></select></label>
+                <div id="usage-week-controls" class="usage-range-controls hidden"><label class="window-control" for="usage-week">Week <input id="usage-week" type="week"></label><button class="refresh-button" id="apply-usage-week" type="button">Apply</button></div>
+                <div id="usage-custom-controls" class="usage-range-controls hidden"><label class="window-control" for="usage-custom-start">From <input id="usage-custom-start" type="date"></label><label class="window-control" for="usage-custom-end">To <input id="usage-custom-end" type="date"></label><button class="refresh-button" id="apply-usage-custom" type="button">Apply</button></div>
+                <p id="usage-window-error" class="window-error hidden" role="alert"></p>
+              </div>
+              <div id="usage-refresh-status" class="refresh-status">Not loaded</div><button class="refresh-button" id="refresh-usage" type="button">Refresh</button>
+            </div>
           </header>
           <section class="section-block first-section">
             <div class="notice-card"><strong>Local evidence only</strong><span id="usage-scope">Usage represented by discovered Pi session artifacts; this is not account-wide billing usage.</span></div>

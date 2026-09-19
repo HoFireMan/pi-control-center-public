@@ -1146,7 +1146,7 @@ export function collectDurableUsage(selectedWindow = "all", options = {}) {
       currentMetadata.databaseSizeBytes = (() => {
         try { return fs.statSync(location.databasePath).size; } catch { return 0; }
       })();
-      const currentUsage = historyUsage(eventRows, currentMetadata, selectedWindow, { nowMs: options.nowMs, codeRoot: evidence.codeRoot }, stateAfterCommit, durableRevision, readContextCompactions(db));
+      const currentUsage = historyUsage(eventRows, currentMetadata, selectedWindow, { nowMs: options.nowMs, codeRoot: evidence.codeRoot, interval: options.interval }, stateAfterCommit, durableRevision, readContextCompactions(db));
       if (previousRevision === 0 && stateAfterCommit === "READY") {
         const legacyUsage = usageResultFromRecords(evidence.selection.selectedRecords, {
           sessionFilesDiscovered: evidence.collected.files.length,
@@ -1159,7 +1159,7 @@ export function collectDurableUsage(selectedWindow = "all", options = {}) {
           duplicateRecordsSuppressed: evidence.selection.duplicateRecordsSuppressed,
           ambiguousRecordsExcluded: evidence.selection.ambiguousRecordsExcluded,
           invalidTimestampRecords: evidence.selection.invalidTimestampRecords,
-        }, selectedWindow, { nowMs: options.nowMs, codeRoot: evidence.codeRoot, contextCompactions: evidence.selection.contextCompactions });
+        }, selectedWindow, { nowMs: options.nowMs, codeRoot: evidence.codeRoot, contextCompactions: evidence.selection.contextCompactions, interval: options.interval });
         if (comparableUsage(currentUsage) !== comparableUsage(legacyUsage)) {
           db.exec("BEGIN IMMEDIATE");
           try {

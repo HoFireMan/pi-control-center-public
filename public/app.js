@@ -45,6 +45,43 @@ function gpt56InputFootprintMetric(over, eligible) {
   return `${number(over)} / ${number(eligible)}${percentage}`;
 }
 
+const usageState = { applied: { window: "all" }, pendingSelection: null };
+let usageRequestGeneration = 0;
+
+function localDateInputValue(value = new Date()) {
+  return [value.getFullYear(), value.getMonth() + 1, value.getDate()].map((part, index) => index === 0 ? String(part).padStart(4, "0") : String(part).padStart(2, "0")).join("-");
+}
+
+function setUsageWindowError(message = "") {
+  const element = $("#usage-window-error");
+  if (!element) return;
+  element.textContent = message;
+  element.classList?.toggle("hidden", !message);
+  if (!element.classList) element.className = message ? "window-error" : "window-error hidden";
+  const actions = element.closest?.(".header-actions");
+  actions?.classList?.toggle("has-usage-error", Boolean(message));
+}
+
+function updateUsageWindowControls(selected) {
+  $("#usage-week-controls")?.classList?.toggle("hidden", selected !== "week");
+  $("#usage-custom-controls")?.classList?.toggle("hidden", selected !== "custom");
+  const maxDate = localDateInputValue();
+  const start = $("#usage-custom-start");
+  const end = $("#usage-custom-end");
+  if (start) start.max = maxDate;
+  if (end) end.max = maxDate;
+}
+
+function usageRequestQuery() {
+  const params = new URLSearchParams({ window: usageState.applied.window });
+  if (usageState.applied.window === "week") params.set("week", usageState.applied.week);
+  if (usageState.applied.window === "custom") {
+    params.set("start", usageState.applied.start);
+    params.set("end", usageState.applied.end);
+  }
+  return params.toString();
+}
+
 function usd(value) {
   return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(4)}` : "Unavailable";
 }
@@ -181,7 +218,13 @@ function renderUsage(data) {
   const cost = data.cost ?? {};
   const selected = data.window?.selected ?? "all";
   const selector = $("#usage-window");
-  if (selector && selector.value !== selected) selector.value = selected;
+  if (selector && !usageState.pendingSelection && selector.value !== selected) selector.value = selected;
+  updateUsageWindowControls(usageState.pendingSelection ?? selected);
+  if (data.window?.startDate && usageState.applied.window === "custom") {
+    $("#usage-custom-start").value = data.window.startDate;
+    $("#usage-custom-end").value = data.window.endDate;
+  }
+  if (data.window?.selected === "week" && usageState.applied.window === "week") $("#usage-week").value = usageState.applied.week;
   $("#usage-window-label").textContent = text(data.window?.label);
   $("#usage-total").textContent = number(tokens.total);
   $("#usage-input").textContent = number(tokens.input);
@@ -628,17 +671,85 @@ async function loadCodexQuota() {
   }
 }
 
+function usageResponseMatchesRequest(data, request) {
+  const window = data?.window ?? {};
+  if (window.selected !== request.window) return false;
+  if (request.window === "custom") {
+    return window.startDate === request.start && window.endDate === request.end;
+  }
+  return true;
+}
+
 async function loadUsage() {
+  const generation = ++usageRequestGeneration;
+  const requestSnapshot = { ...usageState.applied };
   $("#usage-refresh-status").textContent = "Refreshing…";
   try {
-    const windowId = $("#usage-window")?.value ?? "all";
-    const response = await fetch(`/api/usage?window=${encodeURIComponent(windowId)}`, { cache: "no-store" });
+    const response = await fetch(`/api/usage?${usageRequestQuery()}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    renderUsage(await response.json());
+    const data = await response.json();
+    if (generation !== usageRequestGeneration) return;
+    if (!usageResponseMatchesRequest(data, requestSnapshot)) {
+      setUsageWindowError("Usage response did not match the applied window.");
+      $("#usage-refresh-status").textContent = "Usage selection mismatch";
+      console.error("Usage response did not match the applied window", { requested: requestSnapshot.window, returned: data?.window?.selected });
+      return;
+    }
+    usageState.applied = requestSnapshot;
+    usageState.pendingSelection = null;
+    renderUsage(data);
   } catch (error) {
+    if (generation !== usageRequestGeneration) return;
     $("#usage-refresh-status").textContent = "Evidence unavailable";
     console.error(error);
   }
+}
+
+function selectUsageWindow(event) {
+  const selected = event.target.value;
+  setUsageWindowError();
+  updateUsageWindowControls(selected);
+  if (["all", "today", "last7", "last30"].includes(selected)) {
+    usageState.applied = { window: selected };
+    usageState.pendingSelection = null;
+    loadUsageAndQuota();
+  } else {
+    usageState.pendingSelection = selected;
+  }
+}
+
+function applyUsageWeek() {
+  const week = $("#usage-week")?.value ?? "";
+  if (!/^\d{4}-W\d{2}$/.test(week)) {
+    setUsageWindowError("Choose a valid ISO week before applying.");
+    return;
+  }
+  usageState.applied = { window: "week", week };
+  usageState.pendingSelection = null;
+  setUsageWindowError();
+  loadUsageAndQuota();
+}
+
+function applyUsageCustom() {
+  const start = $("#usage-custom-start")?.value ?? "";
+  const end = $("#usage-custom-end")?.value ?? "";
+  const today = localDateInputValue();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    setUsageWindowError("Choose both dates before applying.");
+    return;
+  }
+  if (start > end) {
+    setUsageWindowError("From must be on or before To.");
+    return;
+  }
+  if (end > today) {
+    setUsageWindowError("Future dates are not available.");
+    return;
+  }
+  usageState.applied = { window: "custom", start, end };
+  usageState.pendingSelection = null;
+  setUsageWindowError();
+  loadUsageAndQuota();
 }
 
 async function loadUsageAndQuota() {
@@ -741,7 +852,9 @@ $("#refresh-observability").addEventListener("click", loadObservability);
 $("#refresh-skills").addEventListener("click", loadSkills);
 $("#refresh-worktrees").addEventListener("click", loadWorktrees);
 $("#refresh-usage").addEventListener("click", loadUsageAndQuota);
-$("#usage-window").addEventListener("change", loadUsageAndQuota);
+$("#usage-window").addEventListener("change", selectUsageWindow);
+$("#apply-usage-week").addEventListener("click", applyUsageWeek);
+$("#apply-usage-custom").addEventListener("click", applyUsageCustom);
 $("#refresh-projects").addEventListener("click", loadProjects);
 $("#refresh-diagnostics").addEventListener("click", loadDiagnostics);
 $("#refresh-mcp").addEventListener("click", loadMcp);
